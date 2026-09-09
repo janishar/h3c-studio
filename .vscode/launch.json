@@ -54,6 +54,24 @@
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
       ]
+    },
+    {
+      "name": "h3 studio (debug - source)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GOCACHE": "${workspaceFolder}/.gocache",
+        "H3_ZERO_COPY_WEIGHTS": "0"
+      },
+      "args": [
+        "--h3",
+        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "--model",
+        "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
+      ]
     }
   ],
   "inputs": [

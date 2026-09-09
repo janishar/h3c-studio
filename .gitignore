@@ -3,3 +3,4 @@ sessions/**
 /dist/
 /.gocache/
 /.gomodcache/
+__debug*
