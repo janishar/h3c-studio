@@ -521,7 +521,10 @@ function renderLibrary() {
 }
 
 async function deleteFile(name, kind) {
-  if (!confirm(`Delete this ${kind} file?\n${name}`)) return;
+  const message = kind === "output"
+    ? `Permanently delete this take and its video file?\n${name}\n\nThis cannot be undone.`
+    : `Delete this ${kind} file?\n${name}`;
+  if (!confirm(message)) return;
   const res = await fetch("/api/delete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -613,8 +616,25 @@ function renderTakes() {
     li.classList.toggle("on", state.selected === o.name);
     const p = o.meta?.params || {};
     const secs = o.meta?.duration_s;
-    li.innerHTML = `<div class="nm">${o.name}</div>
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    const video = document.createElement("video");
+    video.src = `/media/output/${encodeURIComponent(o.name)}`;
+    video.muted = true;
+    video.preload = "metadata";
+    video.playsInline = true;
+    video.setAttribute("aria-hidden", "true");
+    thumb.append(video);
+    const info = document.createElement("div");
+    info.className = "info";
+    info.innerHTML = `<div class="nm">${o.name}</div>
       <div class="meta">${p.width || "?"}×${p.height || "?"} · ${p.frames || "?"}f · ${p.steps || "?"} steps · seed ${p.seed ?? "?"}${secs ? " · " + secs + "s" : ""}</div>`;
+    row.append(thumb, info);
+    li.append(row);
+
     const ops = document.createElement("div");
     ops.className = "ops";
     ops.append(
