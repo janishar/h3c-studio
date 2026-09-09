@@ -16,16 +16,20 @@ const state = {
   job: null,
   cfg: null,
   tick: null,
+  saveTimer: null,
+  promptDoc: [{ type: "text", value: "" }],
+  mention: null,
 };
 
 const SIZES = [
-  ["512 square", 512, 512],
-  ["768 square", 768, 768],
-  ["1344 × 768", 1344, 768],
-  ["768 × 1344", 768, 1344],
-  ["1024 × 768", 1024, 768],
-  ["448 × 800", 448, 800],
-  ["256 preview", 256, 256],
+  ["1:1  (Square)", 1],
+  ["2:3 (Portrait photo)", 2 / 3],
+  ["3:2 (Landscape photo)", 3 / 2],
+  ["3:4 (Portrait standard)", 3 / 4],
+  ["4:3 (Standard)", 4 / 3],
+  ["9:16 (Portrait)", 9 / 16],
+  ["16:9 (Widescreen)", 16 / 9],
+  ["21:9 (Ultrawide)", 21 / 9],
 ];
 
 const QUALITY = [
@@ -35,15 +39,163 @@ const QUALITY = [
   ["Reference", { steps: 50, layers: 50, reuse: 1, token: false }],
 ];
 
+function slotLabel(refs, index) {
+  const n = refs.slice(0, index + 1).filter((item) => item.kind === refs[index].kind).length;
+  const ref = refs[index];
+  return `${ref.kind === "image" ? "Picture" : ref.kind === "video" ? "Video" : "Audio"} ${n}`;
+}
+
+function resolvePrompt(doc, refs) {
+  return doc.map((node) => {
+    if (node.type === "text") return node.value;
+    const i = refs.findIndex((ref) => ref.id === node.refId);
+    if (i === -1) throw new Error(`Reference no longer attached: ${node.refId}`);
+    return `<${slotLabel(refs, i)}>`;
+  }).join("");
+}
+
+function promptText(doc = state.promptDoc) {
+  return doc.map((node) => node.type === "text" ? node.value : `@${node.refId}`).join("");
+}
+
+function renderPromptEditor() {
+  const editor = $("prompt");
+  editor.innerHTML = "";
+  state.promptDoc.forEach((node) => {
+    if (node.type === "text") editor.append(document.createTextNode(node.value));
+    else {
+      const ref = state.refs.find((item) => item.id === node.refId);
+      const chip = document.createElement("span");
+      chip.className = `mention-chip${ref ? "" : " invalid"}`;
+      chip.contentEditable = "false";
+      chip.dataset.refId = node.refId;
+      chip.textContent = ref ? `@${ref.name} · ${slotLabel(state.refs, state.refs.indexOf(ref))}` : "⚠ removed";
+      editor.append(chip);
+    }
+  });
+}
+
+function readPromptEditor() {
+  const doc = [];
+  $("prompt").childNodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (node.nodeValue) doc.push({ type: "text", value: node.nodeValue });
+    } else if (node.nodeType === Node.ELEMENT_NODE && node.dataset.refId) {
+      doc.push({ type: "ref", refId: node.dataset.refId });
+    } else if (node.textContent) {
+      doc.push({ type: "text", value: node.textContent });
+    }
+  });
+  state.promptDoc = doc.length ? doc : [{ type: "text", value: "" }];
+}
+
+function promptCandidates(query) {
+  const attached = new Set(state.refs.map((ref) => ref.name));
+  return [
+    ...state.refs.map((ref) => ({ ...ref, attached: true })),
+    ...state.inputs.filter((file) => !attached.has(file.name)).map((file) => ({ ...file, attached: false })),
+  ].filter((ref) => ref.name.toLowerCase().includes(query.toLowerCase()));
+}
+
+function closeMentionMenu() {
+  $("mentionMenu").hidden = true;
+  state.mention = null;
+}
+
+function insertMention(ref) {
+  if (!ref.attached) addRef(ref);
+  const attached = state.refs.find((item) => item.name === ref.name);
+  if (!attached) return;
+  const index = state.mention?.textIndex;
+  if (index == null) return;
+  const textNode = $("prompt").childNodes[index];
+  if (!textNode) return;
+  const value = textNode.nodeValue || "";
+  const start = state.mention.start;
+  textNode.nodeValue = value.slice(0, start) + value.slice(state.mention.end);
+  const chip = document.createElement("span");
+  chip.className = "mention-chip";
+  chip.contentEditable = "false";
+  chip.dataset.refId = attached.id;
+  chip.textContent = `@${attached.name} · ${slotLabel(state.refs, state.refs.indexOf(attached))}`;
+  textNode.parentNode.insertBefore(chip, textNode.nextSibling);
+  const space = document.createTextNode(" ");
+  textNode.parentNode.insertBefore(space, chip.nextSibling);
+  const caret = document.createRange();
+  caret.setStart(space, 1);
+  caret.collapse(true);
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(caret);
+  $("prompt").focus();
+  state.promptDoc = [];
+  readPromptEditor();
+  closeMentionMenu();
+  sync();
+}
+
+function insertRefAtCaret(ref) {
+  const range = getSelection()?.rangeCount ? getSelection().getRangeAt(0) : null;
+  if (!range || !$("prompt").contains(range.commonAncestorContainer)) {
+    $("prompt").focus();
+    return;
+  }
+  const chip = document.createElement("span");
+  chip.className = "mention-chip";
+  chip.contentEditable = "false";
+  chip.dataset.refId = ref.id;
+  chip.textContent = `@${ref.name} · ${slotLabel(state.refs, state.refs.indexOf(ref))}`;
+  range.deleteContents();
+  range.insertNode(chip);
+  const space = document.createTextNode(" ");
+  chip.parentNode.insertBefore(space, chip.nextSibling);
+  range.setStart(space, 1); range.collapse(true);
+  getSelection().removeAllRanges(); getSelection().addRange(range);
+  $("prompt").focus();
+  readPromptEditor(); sync();
+}
+
 /* ── setup ─────────────────────────────────────────────────────── */
 
 function buildChips() {
   $("sizePresets").innerHTML = "";
-  SIZES.forEach(([label, w, h]) => {
-    const b = document.createElement("button");
-    b.textContent = label;
-    b.onclick = () => { $("width").value = w; $("height").value = h; sync(); };
-    $("sizePresets").append(b);
+  const custom = document.createElement("option");
+  custom.value = "custom";
+  custom.textContent = "Custom";
+  $("sizePresets").append(custom);
+  SIZES.forEach(([label, ratio]) => {
+    const option = document.createElement("option");
+    option.value = ratio;
+    option.textContent = label;
+    $("sizePresets").append(option);
+  });
+  $("sizePresets").onchange = () => {
+    const selected = SIZES.find(([, ratio]) => String(ratio) === $("sizePresets").value);
+    if (selected) {
+      const ratio = selected[1];
+      $("sizePresets").dataset.ratio = ratio;
+      $("sizePresets").dataset.native = "";
+      $("sizePresets").dataset.preset = "true";
+      setDimensionsForRatio(ratio, +$("megapixels").value);
+    }
+    sync();
+  };
+  $("megapixels").oninput = () => {
+    const ratio = currentAspectRatio();
+    setDimensionsForRatio(ratio, +$("megapixels").value);
+    sync();
+  };
+  document.querySelectorAll("[data-native]").forEach((button) => {
+    button.onclick = () => {
+      const landscape = button.dataset.native === "landscape";
+      $("width").value = landscape ? 1344 : 768;
+      $("height").value = landscape ? 768 : 1344;
+      $("sizePresets").value = "custom";
+      $("sizePresets").dataset.ratio = landscape ? 1344 / 768 : 768 / 1344;
+      $("sizePresets").dataset.native = "true";
+      $("sizePresets").dataset.preset = "";
+      sync();
+    };
   });
   $("qualityPresets").innerHTML = "";
   QUALITY.forEach(([label, q]) => {
@@ -58,10 +210,52 @@ function buildChips() {
   });
 }
 
+function currentAspectRatio() {
+  const w = +$("width").value, h = +$("height").value;
+  return +$("sizePresets").dataset.ratio || (h ? w / h : 1);
+}
+
+function solveCanvas(ratio, megapixels, { aspectWeight = 12 } = {}) {
+  const target = Math.min(megapixels * 1e6, MAX_PIXELS);
+  const base = Math.round(Math.sqrt(target * ratio) / 32);
+  let best = null;
+  for (let k = base - 8; k <= base + 8; k++) {
+    const width = k * 32;
+    if (width < 32) continue;
+    const height = Math.max(32, Math.round(width / ratio / 32) * 32);
+    const pixels = width * height;
+    if (pixels > MAX_PIXELS) continue;
+    const score = aspectWeight * Math.abs((width / height) / ratio - 1)
+      + Math.abs(pixels - target) / target;
+    if (!best || score < best.score) {
+      best = {
+        width, height, pixels, score,
+        actualRatio: width / height,
+        shortEdge: Math.min(width, height),
+      };
+    }
+  }
+  return best;
+}
+
+function setDimensionsForRatio(ratio, megapixels) {
+  const result = solveCanvas(ratio, megapixels);
+  if (!result) throw new Error("No legal H3 canvas size matches this aspect ratio.");
+  $("width").value = result.width;
+  $("height").value = result.height;
+}
+
 function markChips() {
   const w = +$("width").value, h = +$("height").value;
-  [...$("sizePresets").children].forEach((b, i) =>
-    b.classList.toggle("on", SIZES[i][1] === w && SIZES[i][2] === h));
+  const native = (w === 1344 && h === 768) || (w === 768 && h === 1344);
+  if (native) $("sizePresets").dataset.native = "true";
+  const preset = SIZES.find(([, ratio]) => Math.abs(ratio - w / h) < 1e-9);
+  if (!$("sizePresets").dataset.preset && !native) {
+    $("sizePresets").value = preset ? String(preset[1]) : "custom";
+    if (w && h) $("sizePresets").dataset.ratio = w / h;
+  }
+  if (native) $("sizePresets").value = "custom";
+  $("megapixels").disabled = !!$("sizePresets").dataset.native;
   const s = +$("steps").value, l = +$("layers").value, r = +$("reuse").value;
   [...$("qualityPresets").children].forEach((b, i) => {
     const q = QUALITY[i][1];
@@ -76,9 +270,11 @@ function frames() { return LEGAL[+$("frames").value]; }
 function params() {
   const scale = +$("internal").value;
   const w = +$("width").value, h = +$("height").value;
+  const ratio = h ? w / h : 1;
   const p = {
     label: $("label").value.trim(),
-    prompt: $("prompt").value.trim(),
+    session_name: state.cfg?.session || "session-1",
+    prompt_doc: state.promptDoc,
     width: w, height: h,
     frames: frames(),
     steps: +$("steps").value,
@@ -88,20 +284,22 @@ function params() {
     token_reduction: $("tokenReduction").checked,
     int8_row_fc2: $("int8RowFc2").checked,
     ssd_streaming: $("ssdStreaming").checked,
-    ref_images: [], ref_videos: [], ref_audio: [],
+    run_mode: $("runMode").value,
+    refs: state.mode === "ref" ? state.refs.map((ref) => ({ ...ref })) : [],
     env: {},
   };
-  if (scale < 1) {
-    p.render_width = Math.round(w * scale / 32) * 32;
-    p.render_height = Math.round(h * scale / 32) * 32;
+  try {
+    p.prompt = resolvePrompt(state.promptDoc, p.refs);
+  } catch (error) {
+    p.prompt = "";
+    p.prompt_error = error.message;
   }
-  if (state.mode === "ref") {
-    state.refs.forEach((r) => {
-      if (r.kind === "image") p.ref_images.push(r.name);
-      else if (r.kind === "video") p.ref_videos.push({ name: r.name, silent: false });
-      else p.ref_audio.push(r.name);
-    });
-  } else {
+  if (scale < 1) {
+    const internal = solveCanvas(ratio, (w * h / 1000000) * scale * scale);
+    p.render_width = internal.width;
+    p.render_height = internal.height;
+  }
+  if (state.mode !== "ref") {
     if (state.first) p.first_frame = state.first;
     if (state.last) p.last_frame = state.last;
   }
@@ -113,13 +311,26 @@ function params() {
 
 function localErrors(p) {
   const e = [];
+  if (!p.session_name) e.push("Enter a session name.");
   if (p.width % 32 || p.height % 32) e.push("Width and height must be multiples of 32.");
   if (p.width * p.height > MAX_PIXELS)
     e.push(`${p.width}×${p.height} is ${(p.width * p.height).toLocaleString()} pixels; the ceiling is ${MAX_PIXELS.toLocaleString()}.`);
+  if (p.prompt_error) e.push(p.prompt_error);
   if (!p.prompt) e.push("Write a prompt.");
   if (state.mode === "ref" && !state.refs.length) e.push("Ref2VA needs at least one reference.");
-  if (p.ref_audio?.length && !p.ref_images.length && !p.ref_videos.length)
+  const refs = p.refs || [];
+  const images = refs.filter((r) => r.kind === "image");
+  const videos = refs.filter((r) => r.kind === "video");
+  const audio = refs.filter((r) => r.kind === "audio");
+  const duration = refs.reduce((sum, r) => sum + (Number(r.duration) || 0), 0);
+  if (audio.length && !images.length && !videos.length)
     e.push("A standalone audio reference must accompany an image or video.");
+  if (images.length > 9) e.push("At most 9 image references.");
+  if (videos.length > 3) e.push("At most 3 video references.");
+  if (audio.length > 3) e.push("At most 3 audio references.");
+  if (duration > 15) e.push(`Combined reference duration is ${duration.toFixed(1)}s; the limit is 15s.`);
+  if (refs.some((ref) => ref.kind === "video" && ref.mode === "replace" && !ref.pairedAudio))
+    e.push("Choose replacement audio for every video in replace mode.");
   if (state.mode === "anchor" && !state.first && !state.last)
     e.push("Set a first or last frame, or switch to Reference mode.");
   return e;
@@ -130,9 +341,14 @@ function commandPreview(p) {
   const env = Object.entries(p.env).map(([k, v]) => `${k}=${v}`).join(" ");
   const a = ["./h3", "--profile", "-d", q(state.cfg?.model || "MODEL")];
   a.push("-p", `'${p.prompt.replace(/\n/g, " ").slice(0, 60)}…'`);
-  p.ref_images.forEach((n) => a.push("--ref-image", q(`input/${n}`)));
-  p.ref_videos.forEach((v) => a.push("--ref-video", q(`input/${v.name}`)));
-  p.ref_audio.forEach((n) => a.push("--ref-audio", q(`input/${n}`)));
+  (p.refs || []).forEach((r) => {
+    if (r.kind === "image") a.push("--ref-image", q(`input/${r.name}`));
+    else if (r.kind === "audio") a.push("--ref-audio", q(`input/${r.name}`));
+    else if (r.mode === "silent") a.push("--ref-silent-video", q(`input/${r.name}`));
+    else if (r.mode === "replace" && r.pairedAudio) {
+      a.push("--ref-video-audio", q(`input/${r.name}`), q(`input/${r.pairedAudio}`));
+    } else a.push("--ref-video", q(`input/${r.name}`));
+  });
   if (p.first_frame) a.push("--first-frame", q(`input/${p.first_frame}`));
   if (p.last_frame) a.push("--last-frame", q(`input/${p.last_frame}`));
   a.push("--width", p.width, "--height", p.height);
@@ -147,6 +363,14 @@ function commandPreview(p) {
 
 function sync() {
   const p = params();
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => {
+    fetch("/api/session/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(p),
+    }).catch((err) => appendLog("!! Could not save session: " + err.message));
+  }, 300);
   const n = frames();
   $("frameCount").textContent = n;
   $("frameSecs").textContent = (n / H3_FPS).toFixed(2) + " s";
@@ -154,6 +378,12 @@ function sync() {
   markChips();
 
   const px = p.width * p.height;
+  $("megapixelsValue").textContent = `${(+$("megapixels").value).toFixed(2)} MP`;
+  $("resolvedDimensions").textContent = `${p.width} × ${p.height}`;
+  $("actualMegapixels").textContent = `${(px / 1000000).toFixed(2)} MP`;
+  $("actualRatio").textContent = (p.width / p.height).toFixed(3);
+  const shortEdge = Math.min(p.width, p.height);
+  $("shortEdge").textContent = `short edge ${shortEdge} · ${shortEdge === 768 ? "native" : "below native"}`;
   $("sizeWarn").hidden = px <= MAX_PIXELS;
   $("sizeWarn").textContent = `${px.toLocaleString()} pixels exceeds the ${MAX_PIXELS.toLocaleString()} ceiling.`;
 
@@ -174,7 +404,9 @@ function renderRefs() {
     li.draggable = true;
     li.dataset.kind = r.kind;
     li.dataset.i = i;
-    li.innerHTML = `<span class="n"></span>`;
+    const index = state.refs.slice(0, i + 1).filter((ref) => ref.kind === r.kind).length;
+    const label = r.kind === "image" ? `Picture ${index}` : r.kind === "video" ? `Video ${index}` : `Audio ${index}`;
+    li.innerHTML = `<button class="n" type="button">${label}</button>`;
     if (r.kind === "image") {
       const img = document.createElement("img");
       img.src = `/media/input/${encodeURIComponent(r.name)}`;
@@ -184,7 +416,41 @@ function renderRefs() {
     nm.className = "nm"; nm.textContent = r.name;
     const x = document.createElement("button");
     x.textContent = "×"; x.title = "Remove";
-    x.onclick = (e) => { e.stopPropagation(); state.refs.splice(i, 1); renderRefs(); sync(); };
+    x.onclick = (e) => { e.stopPropagation(); state.refs.splice(i, 1); renderRefs(); renderPromptEditor(); sync(); };
+    li.querySelector(".n").onclick = (e) => {
+      e.stopPropagation();
+      insertRefAtCaret(r);
+    };
+    if (r.duration != null) {
+      const duration = document.createElement("span");
+      duration.className = "duration";
+      duration.textContent = `${Number(r.duration).toFixed(1)}s`;
+      li.append(duration);
+    }
+    if (r.kind === "video") {
+      const mode = document.createElement("select");
+      mode.className = "refmode";
+      [["keep", "keep audio"], ["silent", "silent"], ["replace", "replace audio"]]
+        .forEach(([value, text]) => {
+          const option = document.createElement("option");
+          option.value = value; option.textContent = text; option.selected = (r.mode || "keep") === value;
+          mode.append(option);
+        });
+      mode.onchange = (e) => { r.mode = e.target.value; sync(); };
+      li.append(mode);
+      if (r.mode === "replace") {
+        const audio = document.createElement("select");
+        audio.className = "refmode";
+        audio.innerHTML = '<option value="">audio file…</option>';
+        state.inputs.filter((file) => file.kind === "audio").forEach((file) => {
+          const option = document.createElement("option");
+          option.value = file.name; option.textContent = file.name; option.selected = r.pairedAudio === file.name;
+          audio.append(option);
+        });
+        audio.onchange = (e) => { r.pairedAudio = e.target.value || null; sync(); };
+        li.append(audio);
+      }
+    }
     li.append(nm, x);
 
     li.ondragstart = (e) => { li.classList.add("dragging"); e.dataTransfer.setData("text/plain", i); };
@@ -199,7 +465,13 @@ function renderRefs() {
     };
     ul.append(li);
   });
+  const counts = { image: 0, video: 0, audio: 0 };
+  let duration = 0;
+  state.refs.forEach((ref) => { counts[ref.kind]++; duration += Number(ref.duration) || 0; });
   $("refHint").hidden = false;
+  $("refHint").innerHTML =
+    `Pictures ${counts.image}/9 · Videos ${counts.video}/3 · Audio ${counts.audio}/3 · ` +
+    `duration ${duration.toFixed(1)}/15.0s · Click a label to insert it.`;
 }
 
 function renderLibrary() {
@@ -218,9 +490,39 @@ function renderLibrary() {
       d.className = "nonimg"; d.textContent = f.kind;
       fig.append(d);
     }
+    const delBtn = document.createElement("button");
+    delBtn.className = "delete-file";
+    delBtn.type = "button";
+    delBtn.title = "Delete input";
+    delBtn.textContent = "×";
+    delBtn.onclick = (e) => { e.stopPropagation(); deleteFile(f.name, "input"); };
+    fig.append(delBtn);
     fig.onclick = () => addRef(f);
     wrap.append(fig);
   });
+}
+
+async function deleteFile(name, kind) {
+  if (!confirm(`Delete this ${kind} file?\n${name}`)) return;
+  const res = await fetch("/api/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, kind }),
+  });
+  const data = await res.json();
+  if (data.error) { appendLog("!! " + data.error); return; }
+  state.inputs = data.inputs || [];
+  state.outputs = data.outputs || [];
+  state.refs = state.refs.filter((ref) => !(kind === "input" && ref.name === name));
+  if (state.first === name) state.first = null;
+  if (state.last === name) state.last = null;
+  if (kind === "output" && state.selected === name) {
+    state.selected = null;
+    $("player").removeAttribute("src");
+    $("player").classList.remove("on");
+    $("viewerEmpty").hidden = false;
+  }
+  renderLibrary(); renderRefs(); renderPromptEditor(); renderAnchors(); renderTakes(); sync();
 }
 
 function addRef(f) {
@@ -231,7 +533,25 @@ function addRef(f) {
     renderAnchors();
   } else {
     if (state.refs.length >= 12) return;
-    state.refs.push({ name: f.name, kind: f.kind });
+    if (state.refs.some((ref) => ref.name === f.name)) return;
+    const count = state.refs.filter((ref) => ref.kind === f.kind).length;
+    const limit = f.kind === "image" ? 9 : 3;
+    if (count >= limit) return;
+    const duration = Number(f.duration) || 0;
+    if ((f.kind === "video" || f.kind === "audio") && duration && (duration < 2 || duration > 15)) {
+      appendLog(`!! ${f.name} must be between 2 and 15 seconds.`);
+      return;
+    }
+    const usedDuration = state.refs.reduce((sum, ref) => sum + (Number(ref.duration) || 0), 0);
+    if (usedDuration + duration > 15) {
+      appendLog("!! Combined video and audio duration cannot exceed 15 seconds.");
+      return;
+    }
+    state.refs.push({
+      id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+      name: f.name, kind: f.kind, mode: f.kind === "video" ? "keep" : undefined,
+      pairedAudio: null, duration: f.duration ?? null,
+    });
     renderRefs();
   }
   sync();
@@ -259,7 +579,7 @@ async function upload(files) {
     if (data.name) {
       const kind = /\.(png|jpe?g|webp)$/i.test(data.name) ? "image"
         : /\.(mp4|mov)$/i.test(data.name) ? "video" : "audio";
-      addRef({ name: data.name, kind });
+      addRef({ ...data, kind });
     }
   }
 }
@@ -282,7 +602,7 @@ function renderTakes() {
     ops.append(
       mkBtn("Reuse settings", () => restore(o)),
       mkBtn("Chain →", () => chain(o.name)),
-      mkBtn("Delete", () => del(o.name)),
+      mkBtn("Delete", () => deleteFile(o.name, "output")),
     );
     li.append(ops);
     li.onclick = (e) => { if (e.target.tagName !== "BUTTON") select(o.name); };
@@ -310,18 +630,23 @@ function select(name) {
 function restore(o) {
   const p = o.meta?.params;
   if (!p) return;
-  $("prompt").value = p.prompt || "";
+  state.promptDoc = Array.isArray(p.prompt_doc) ? p.prompt_doc : [{ type: "text", value: p.prompt || "" }];
   $("width").value = p.width; $("height").value = p.height;
   $("steps").value = p.steps; $("layers").value = p.layers;
   $("reuse").value = p.reuse || 1; $("seed").value = p.seed;
   $("tokenReduction").checked = !!p.token_reduction;
   $("frames").value = Math.max(0, LEGAL.indexOf(p.frames));
-  state.refs = (p.ref_images || []).map((n) => ({ name: n, kind: "image" }));
-  (p.ref_videos || []).forEach((v) => state.refs.push({ name: v.name, kind: "video" }));
-  (p.ref_audio || []).forEach((n) => state.refs.push({ name: n, kind: "audio" }));
+  state.refs = (p.refs || [
+    ...(p.ref_images || []).map((name) => ({ name, kind: "image" })),
+    ...(p.ref_videos || []).map((clip) => ({ name: clip.name, kind: "video", mode: clip.silent ? "silent" : "keep" })),
+    ...(p.ref_audio || []).map((name) => ({ name, kind: "audio" })),
+  ]).map((ref, i) => ({
+    id: ref.id || `${Date.now()}-${i}`, pairedAudio: ref.pairedAudio || null,
+    duration: ref.duration ?? null, ...ref,
+  }));
   state.first = p.first_frame || null; state.last = p.last_frame || null;
   setMode(state.first || state.last ? "anchor" : "ref");
-  renderRefs(); renderAnchors(); sync();
+  renderRefs(); renderPromptEditor(); renderAnchors(); sync();
 }
 
 async function chain(name) {
@@ -335,18 +660,6 @@ async function chain(name) {
   state.first = data.name;
   state.last = null;
   renderLibrary(); renderAnchors(); sync();
-}
-
-async function del(name) {
-  const res = await fetch("/api/delete", { method: "POST", body: JSON.stringify({ name }) });
-  const data = await res.json();
-  state.outputs = data.outputs;
-  if (state.selected === name) {
-    state.selected = null;
-    $("player").classList.remove("on");
-    $("viewerEmpty").hidden = false;
-  }
-  renderTakes();
 }
 
 /* ── rendering ─────────────────────────────────────────────────── */
@@ -462,31 +775,229 @@ function init() {
   setMode("ref");
   renderAnchors();
 
-  ["width", "height", "steps", "layers", "reuse", "seed", "frames", "prompt",
+  ["width", "height", "steps", "layers", "reuse", "seed", "frames",
    "label", "internal", "tokenReduction", "int8RowFc2", "ssdStreaming",
-   "zeroCopy", "prefetchDepth", "prefetchWorkers"]
-    .forEach((id) => $(id).addEventListener("input", sync));
+   "zeroCopy", "prefetchDepth", "prefetchWorkers", "runMode"]
+    .forEach((id) => $(id).addEventListener("input", (event) => {
+      if (id === "width" || id === "height") {
+        $("sizePresets").dataset.native = "";
+        $("sizePresets").dataset.preset = "";
+      }
+      sync();
+    }));
+  $("prompt").addEventListener("input", () => {
+    readPromptEditor();
+    const selection = getSelection();
+    const node = selection?.anchorNode;
+    if (!node || node.nodeType !== Node.TEXT_NODE || !$("prompt").contains(node)) {
+       closeMentionMenu(); sync(); return;
+    }
+    const before = node.nodeValue.slice(0, selection.anchorOffset);
+    const match = before.match(/(^|\s)@([^\s@]*)$/);
+    if (!match) { closeMentionMenu(); sync(); return; }
+    const query = match[2];
+    const options = promptCandidates(query);
+    state.mention = {
+       textIndex: Array.from($("prompt").childNodes).indexOf(node),
+       start: before.length - match[0].length + match[1].length,
+       end: before.length,
+       options,
+       selected: 0,
+    };
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    const menu = $("mentionMenu");
+    menu.style.left = `${rect.left}px`; menu.style.top = `${rect.bottom + 4}px`;
+    menu.innerHTML = "";
+    let lastGroup = null;
+    options.forEach((ref, i) => {
+       const group = ref.attached ? "Attached" : "Input library";
+       if (group !== lastGroup) {
+         const heading = document.createElement("div");
+         heading.className = "mention-group";
+         heading.textContent = group;
+         menu.append(heading);
+         lastGroup = group;
+       }
+       const button = document.createElement("button");
+       button.type = "button"; button.className = `mention-option${i ? "" : " on"}`;
+       const preview = document.createElement("span");
+       preview.className = `mention-preview ${ref.kind}`;
+       if (ref.kind === "image") {
+         const image = document.createElement("img");
+         image.src = `/media/input/${encodeURIComponent(ref.name)}`;
+         image.alt = "";
+         preview.append(image);
+       } else {
+         preview.textContent = ref.kind === "video" ? "▶" : "♪";
+       }
+       const details = document.createElement("span");
+       details.innerHTML = `${ref.name}<small>${ref.attached ? "attached" : "attach from library"}</small>`;
+       button.append(preview, details);
+       button.dataset.optionIndex = i;
+       button.onmousedown = (event) => { event.preventDefault(); insertMention(ref); };
+       menu.append(button);
+    });
+    menu.hidden = !options.length;
+    sync();
+  });
+  $("prompt").addEventListener("keydown", (event) => {
+    if (event.key === "Backspace") {
+      const selection = getSelection();
+      if (selection?.isCollapsed && selection.anchorNode?.nodeType === Node.TEXT_NODE &&
+          selection.anchorOffset === 0 && selection.anchorNode.previousSibling?.dataset?.refId) {
+        event.preventDefault();
+        selection.anchorNode.previousSibling.remove();
+        readPromptEditor(); renderPromptEditor(); sync();
+        return;
+      }
+    }
+    if (!state.mention || $("mentionMenu").hidden) return;
+    const options = state.mention.options;
+    if (event.key === "Escape") { event.preventDefault(); closeMentionMenu(); return; }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+       event.preventDefault();
+       state.mention.selected = (state.mention.selected + (event.key === "ArrowDown" ? 1 : options.length - 1)) % options.length;
+       [...$("mentionMenu").querySelectorAll(".mention-option")].forEach((el) =>
+         el.classList.toggle("on", +el.dataset.optionIndex === state.mention.selected));
+    } else if (event.key === "Enter" || event.key === "Tab") {
+       event.preventDefault(); insertMention(options[state.mention.selected]);
+    }
+  });
 
   $("modeSwitch").onclick = (e) => {
     if (e.target.dataset.mode) { setMode(e.target.dataset.mode); sync(); }
   };
   $("dice").onclick = () => { $("seed").value = Math.floor(Math.random() * 2 ** 31); sync(); };
 
+  async function switchSession(name) {
+    if (!name) return;
+    if (state.cfg?.session && name !== state.cfg.session &&
+        !confirm(`Switch to session "${name}"?\nThe web UI will reload with its saved settings and blank current selections.`)) {
+      $("sessionSelect").value = state.cfg.session;
+      return;
+    }
+    const active = await fetch("/api/session/activate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const activeData = await active.json();
+    if (activeData.error) {
+      appendLog("!! " + activeData.error);
+      $("sessionSelect").value = state.cfg.session;
+      return;
+    }
+    if (name !== state.cfg.session) {
+      window.location.reload();
+      return;
+    }
+    const res = await fetch(`/api/session/${encodeURIComponent(name)}`);
+    if (!res.ok) {
+      state.inputs = [];
+      state.outputs = [];
+      renderLibrary();
+      renderTakes();
+      return;
+    }
+    const p = await res.json();
+    state.promptDoc = Array.isArray(p.prompt_doc) ? p.prompt_doc : [{ type: "text", value: p.prompt || "" }];
+    $("label").value = p.label || "";
+    $("width").value = p.width || 512;
+    $("height").value = p.height || 512;
+    $("steps").value = p.steps || 4;
+    $("layers").value = p.layers || 50;
+    $("reuse").value = p.reuse || 1;
+    $("seed").value = p.seed || 42;
+    $("frames").value = LEGAL.indexOf(p.frames);
+    $("internal").value = p.render_width ? String(p.render_width / p.width) : "1";
+    $("tokenReduction").checked = !!p.token_reduction;
+    $("int8RowFc2").checked = !!p.int8_row_fc2;
+    $("ssdStreaming").checked = !!p.ssd_streaming;
+    $("runMode").value = p.run_mode || "oneshot";
+    $("prefetchDepth").value = p.env?.H3_QWEN_PREFETCH_DEPTH || "";
+    $("prefetchWorkers").value = p.env?.H3_QWEN_PREFETCH || "";
+    state.refs = (p.refs || [
+      ...(p.ref_images || []).map((name) => ({ name, kind: "image" })),
+      ...(p.ref_videos || []).map((clip) => ({ name: clip.name, kind: "video", mode: clip.silent ? "silent" : "keep" })),
+      ...(p.ref_audio || []).map((name) => ({ name, kind: "audio" })),
+    ]).map((ref, i) => ({
+      id: ref.id || `${Date.now()}-${i}`, mode: ref.kind === "video" ? (ref.mode || "keep") : undefined,
+      pairedAudio: ref.pairedAudio || null, duration: ref.duration ?? null, ...ref,
+    }));
+    state.first = p.first_frame || null;
+    state.last = p.last_frame || null;
+    renderRefs();
+    renderPromptEditor();
+    renderAnchors();
+    fetch("/api/inputs").then((r) => r.json()).then((items) => {
+      state.inputs = items;
+      renderLibrary();
+    });
+    fetch("/api/outputs").then((r) => r.json()).then((items) => {
+      state.outputs = items;
+      renderTakes();
+    });
+    sync();
+  }
+
+  $("sessionSelect").onchange = (e) => {
+    if (e.target.value) switchSession(e.target.value);
+  };
+  const closeSessionModal = () => {
+    $("sessionModal").hidden = true;
+    $("sessionError").hidden = true;
+  };
+  $("newSession").onclick = () => {
+    $("newSessionName").value = "";
+    $("sessionModal").hidden = false;
+    $("newSessionName").focus();
+  };
+  $("cancelSession").onclick = closeSessionModal;
+  $("createSession").onclick = async () => {
+    const name = $("newSessionName").value.trim();
+    if (!name) {
+      $("sessionError").textContent = "Enter a session name.";
+      $("sessionError").hidden = false;
+      $("newSessionName").focus();
+      return;
+    }
+    const active = await fetch("/api/session/activate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    const data = await active.json();
+    if (data.error) {
+      $("sessionError").textContent = data.error;
+      $("sessionError").hidden = false;
+      return;
+    }
+    window.location.reload();
+  };
+  $("newSessionName").onkeydown = (e) => {
+    if (e.key === "Enter") $("createSession").click();
+    if (e.key === "Escape") closeSessionModal();
+  };
+
   $("scaffold").onclick = () => {
-    $("prompt").value =
-      "Scene: \nAction: \nCamera: \nLook: \nAudio: ";
-    $("prompt").focus(); sync();
+    const tokens = {};
+    state.refs.forEach((ref, i) => {
+      const n = state.refs.slice(0, i + 1).filter((item) => item.kind === ref.kind).length;
+      tokens[ref.kind] = tokens[ref.kind] || [];
+      tokens[ref.kind].push(`<${ref.kind === "image" ? "Picture" : ref.kind[0].toUpperCase() + ref.kind.slice(1)} ${n}>`);
+    });
+    const subject = Object.values(tokens).flat()[0] || "<subject>";
+    const audio = tokens.audio?.[0] || "the ambience";
+    state.promptDoc = [{ type: "text", value:
+      `Scene: ${subject} stands in ...\nAction: ...\nCamera: ...\nLook: ...\nAudio: match the ambience of ${audio}` }];
+    renderPromptEditor(); $("prompt").focus(); sync();
   };
 
   $("prompt").addEventListener("paste", (e) => {
     const text = e.clipboardData?.getData("text/plain");
     if (text == null) return;
     e.preventDefault();
-    const input = e.currentTarget;
-    const start = input.selectionStart;
-    const end = input.selectionEnd;
-    input.setRangeText(text, start, end, "end");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.execCommand("insertText", false, text);
   });
 
   $("file").onchange = (e) => upload(e.target.files);
@@ -534,6 +1045,38 @@ function init() {
     if (data.error) appendLog("!! " + data.error);
   };
 
+  $("loadH3").onclick = async () => {
+    const res = await fetch("/api/interactive/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params()),
+    });
+    const data = await res.json();
+    if (data.error) appendLog("!! " + data.error);
+    else {
+      appendLog("$ h3 -d " + state.cfg.model);
+      $("sendH3").disabled = false;
+      $("runMode").value = "interactive";
+      sync();
+    }
+  };
+
+  $("interactiveForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const input = $("interactiveInput");
+    const line = input.value.trim();
+    if (!line) return;
+    appendLog("h3> " + line);
+    input.value = "";
+    const res = await fetch("/api/interactive/input", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ line }),
+    });
+    const data = await res.json();
+    if (data.error) appendLog("!! " + data.error);
+  };
+
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !$("render").disabled) {
       $("render").click();
@@ -542,17 +1085,88 @@ function init() {
 
   fetch("/api/config").then((r) => r.json()).then((c) => {
     state.cfg = c;
+    $("sessionSelect").value = c.session || "session-1";
+    $("loadH3").hidden = false;
+    $("sendH3").hidden = false;
+    $("interactiveForm").hidden = false;
     $("modelPath").textContent = c.model;
-    $("inputPath").textContent = c.inputs;
-    $("outputPath").textContent = c.outputs;
-    sync();
+    $("h3Path").textContent = c.h3;
+    switchSession(c.session || "session-1");
+  });
+  fetch("/api/sessions").then((r) => r.json()).then((sessions) => {
+    const select = $("sessionSelect");
+    select.innerHTML = '<option value="">Select session</option>';
+    sessions.forEach((s) => {
+      const option = document.createElement("option");
+      option.value = s.name;
+      option.textContent = s.name;
+      select.append(option);
+    });
+    select.value = state.cfg?.session || "";
   });
 
-  $("pathButtons").onclick = (e) => {
-    const button = e.target.closest("[data-path]");
-    if (!button) return;
+  $("modelButton").onclick = () => {
     $("pathPanel").hidden = false;
-    [...$("pathButtons").children].forEach((b) => b.classList.toggle("on", b === button));
+    $("modelPathInput").value = state.cfg.model;
+    $("h3PathInput").value = state.cfg.h3;
+  };
+  $("changeH3").onclick = () => {
+    $("pathPanel").hidden = true;
+    $("h3Error").hidden = true;
+    $("h3PathInput").value = state.cfg.h3;
+    $("h3Modal").hidden = false;
+    $("h3PathInput").focus();
+  };
+  $("cancelH3").onclick = () => { $("h3Modal").hidden = true; };
+  $("saveH3Path").onclick = async () => {
+    const h3 = $("h3PathInput").value.trim();
+    const res = await fetch("/api/h3", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ h3 }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      $("h3Error").textContent = data.error;
+      $("h3Error").hidden = false;
+      return;
+    }
+    state.cfg.h3 = data.h3;
+    $("h3Path").textContent = data.h3;
+    $("h3Modal").hidden = true;
+  };
+  $("h3PathInput").onkeydown = (e) => {
+    if (e.key === "Enter") $("saveH3Path").click();
+    if (e.key === "Escape") $("cancelH3").click();
+  };
+  $("changeModel").onclick = () => {
+    $("pathPanel").hidden = true;
+    $("modelError").hidden = true;
+    $("modelPathInput").value = state.cfg.model;
+    $("modelModal").hidden = false;
+    $("modelPathInput").focus();
+  };
+  $("cancelModel").onclick = () => { $("modelModal").hidden = true; };
+  $("saveModel").onclick = async () => {
+    const model = $("modelPathInput").value.trim();
+    const res = await fetch("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      $("modelError").textContent = data.error;
+      $("modelError").hidden = false;
+      return;
+    }
+    state.cfg.model = data.model;
+    $("modelPath").textContent = data.model;
+    $("modelModal").hidden = true;
+  };
+  $("modelPathInput").onkeydown = (e) => {
+    if (e.key === "Enter") $("saveModel").click();
+    if (e.key === "Escape") $("cancelModel").click();
   };
 
   document.addEventListener("click", (e) => {

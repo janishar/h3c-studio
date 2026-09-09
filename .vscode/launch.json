@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "h3 studio (interactive)",
+      "name": "h3 studio (web UI)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/h3studio.py",
@@ -12,12 +12,7 @@
         "--h3",
         "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
         "--model",
-        "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
-        "--input",
-        "${workspaceFolder}/sessions/input",
-        "--output",
-        "${workspaceFolder}/sessions/outputs",
-        "--interactive"
+        "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
       ],
       "env": {
         "H3_ZERO_COPY_WEIGHTS": "0"
@@ -37,12 +32,7 @@
         "--h3",
         "${input:h3Path}",
         "--model",
-        "${input:modelPath}",
-        "--input",
-        "${input:inputPath}",
-        "--output",
-        "${input:outputPath}",
-        "--interactive"
+        "${input:modelPath}"
       ],
       "env": {
         "H3_ZERO_COPY_WEIGHTS": "0"
@@ -64,18 +54,6 @@
       "type": "promptString",
       "description": "Full path to MiniMax-H3 model directory",
       "default": "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
-    },
-    {
-      "id": "inputPath",
-      "type": "promptString",
-      "description": "Full path to input directory",
-      "default": "${workspaceFolder}/sessions/input"
-    },
-    {
-      "id": "outputPath",
-      "type": "promptString",
-      "description": "Full path to output directory",
-      "default": "${workspaceFolder}/sessions/outputs"
     }
   ]
 }

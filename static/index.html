@@ -10,15 +10,20 @@
 
 <header class="bar">
   <div class="mark">h3 <span>studio</span></div>
+  <label class="sessionbar">Session
+    <select id="sessionSelect" aria-label="Existing sessions">
+      <option value="">Select session</option>
+    </select>
+    <button class="ghost sm" id="newSession" type="button">New session</button>
+  </label>
   <div class="pathbuttons" id="pathButtons">
-    <button class="pathbutton" data-path="model">Model</button>
-    <button class="pathbutton" data-path="inputs">Input</button>
-    <button class="pathbutton" data-path="outputs">Output</button>
+    <button class="pathbutton" id="modelButton" type="button">Model</button>
   </div>
   <div class="pathpanel" id="pathPanel" hidden>
+    <div><b>h3</b><code id="h3Path"></code></div>
     <div><b>Model</b><code id="modelPath"></code></div>
-    <div><b>Input</b><code id="inputPath"></code></div>
-    <div><b>Output</b><code id="outputPath"></code></div>
+    <button class="ghost sm" id="changeH3" type="button">Choose h3 path</button>
+    <button class="ghost sm" id="changeModel" type="button">Choose model path</button>
   </div>
   <div class="lamp" id="lamp"><i></i><span id="lampText">idle</span></div>
 </header>
@@ -60,7 +65,9 @@
 
     <div class="block">
       <h2>Prompt</h2>
-      <textarea id="prompt" rows="7" placeholder="Scene: …&#10;Action: …&#10;Camera: …&#10;Look: …&#10;Audio: …"></textarea>
+      <div id="prompt" class="prompt-editor" contenteditable="true" role="textbox"
+           aria-multiline="true" data-placeholder="Scene: …&#10;Action: …&#10;Camera: …&#10;Look: …&#10;Audio: …"></div>
+      <div id="mentionMenu" class="mention-menu" hidden></div>
       <div class="row">
         <button class="ghost sm" id="scaffold">Insert structure</button>
         <span class="hint" id="promptCount"></span>
@@ -69,7 +76,26 @@
 
     <div class="block">
       <h2>Canvas</h2>
-      <div class="chips" id="sizePresets"></div>
+      <div class="resolution-row">
+        <label class="size-select">Output resolution
+          <select id="sizePresets" aria-label="Output resolution"></select>
+        </label>
+        <label class="resolution-stat">Megapixels
+          <input type="range" id="megapixels" min="0.1" max="1.03" step="0.01" value="0.5">
+          <output id="megapixelsValue">0.50 MP</output>
+        </label>
+      </div>
+      <div class="canvas-readout">
+        <span><b id="resolvedDimensions">512 × 512</b> resolved</span>
+        <span><b id="actualMegapixels">0.26 MP</b> actual</span>
+        <span><b id="actualRatio">1.000</b> ratio</span>
+        <span><b id="shortEdge">short edge 512</b></span>
+      </div>
+      <div class="native-canvas">
+        <span>Native canvas</span>
+        <button type="button" data-native="landscape">Landscape — 1344 × 768</button>
+        <button type="button" data-native="portrait">Portrait — 768 × 1344</button>
+      </div>
       <div class="fields">
         <label>Width<input type="number" id="width" step="32" value="512"></label>
         <label>Height<input type="number" id="height" step="32" value="512"></label>
@@ -119,9 +145,19 @@
 
     <div class="block">
       <label class="labelfield">Take name<input type="text" id="label" placeholder="shot-01"></label>
-      <div class="actions">
+      <div class="actions render-actions">
+        <label class="runmode">Mode
+          <select id="runMode">
+            <option value="oneshot">One-shot</option>
+            <option value="interactive">Interactive</option>
+          </select>
+        </label>
         <button class="go" id="render">Render</button>
         <button class="ghost" id="queueBtn">Queue 3 seeds</button>
+      </div>
+      <div class="actions interactive-actions">
+        <button class="ghost" id="loadH3">Load h3.c</button>
+        <button class="ghost" id="sendH3" disabled>Send to h3.c</button>
       </div>
       <p class="errors" id="errors" hidden></p>
       <details class="cmd"><summary>Command</summary><pre id="cmdPreview"></pre></details>
@@ -156,6 +192,12 @@
         <input id="terminalCommand" type="text" autocomplete="off" spellcheck="false" placeholder="Run a command in the h3 work directory">
         <button class="ghost sm" type="submit">Run</button>
       </form>
+      <form class="terminalform interactiveform" id="interactiveForm">
+        <span class="terminalprompt">h3&gt;</span>
+        <input id="interactiveInput" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Interactive command or prompt">
+        <button class="ghost sm" type="submit">Send</button>
+      </form>
       <table id="profile" hidden><tbody></tbody></table>
     </div>
 
@@ -175,6 +217,48 @@
   </section>
 
 </main>
+
+<div class="modal" id="sessionModal" hidden>
+  <div class="modalcard" role="dialog" aria-modal="true" aria-labelledby="sessionModalTitle">
+    <h2 id="sessionModalTitle">New session</h2>
+    <label>Session name
+      <input id="newSessionName" type="text" placeholder="session-2" autocomplete="off">
+    </label>
+    <p class="errors" id="sessionError" hidden></p>
+    <div class="modalactions">
+      <button class="ghost" id="cancelSession" type="button">Cancel</button>
+      <button class="go" id="createSession" type="button">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="h3Modal" hidden>
+  <div class="modalcard" role="dialog" aria-modal="true" aria-labelledby="h3ModalTitle">
+    <h2 id="h3ModalTitle">Choose h3 path</h2>
+    <label>h3 executable
+      <input id="h3PathInput" type="text" placeholder="/path/to/h3" autocomplete="off">
+    </label>
+    <p class="errors" id="h3Error" hidden></p>
+    <div class="modalactions">
+      <button class="ghost" id="cancelH3" type="button">Cancel</button>
+      <button class="go" id="saveH3Path" type="button">Use path</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modelModal" hidden>
+  <div class="modalcard" role="dialog" aria-modal="true" aria-labelledby="modelModalTitle">
+    <h2 id="modelModalTitle">Choose model path</h2>
+    <label>MiniMax-H3 directory
+      <input id="modelPathInput" type="text" placeholder="/path/to/MiniMax-H3" autocomplete="off">
+    </label>
+    <p class="errors" id="modelError" hidden></p>
+    <div class="modalactions">
+      <button class="ghost" id="cancelModel" type="button">Cancel</button>
+      <button class="go" id="saveModel" type="button">Use path</button>
+    </div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

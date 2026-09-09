@@ -39,14 +39,97 @@ class Config:
         self.h3 = Path(args.h3).resolve()
         self.model = Path(args.model).resolve()
         self.workdir = self.h3.parent
-        # Use provided paths or default to workdir
-        sessions = self.workdir / "sessions"
-        self.inputs = Path(args.input).resolve() if args.input else (sessions / "input").resolve()
-        self.outputs = Path(args.output).resolve() if args.output else (sessions / "outputs").resolve()
-        self.interactive = args.interactive
-        self.inputs.mkdir(parents=True, exist_ok=True)
-        self.outputs.mkdir(parents=True, exist_ok=True)
+        # Keep web UI state with the studio, independent of the h3 binary path.
+        sessions = HERE / "sessions"
+        self.sessions = sessions
+        self.model_file = sessions / "model.json"
+        self.h3_file = sessions / "h3.json"
+        if self.h3_file.exists():
+            try:
+                saved_h3 = json.loads(self.h3_file.read_text()).get("h3")
+                if saved_h3:
+                    self.h3 = Path(saved_h3).expanduser().resolve()
+                    self.workdir = self.h3.parent
+            except (OSError, json.JSONDecodeError, AttributeError):
+                pass
+        if self.model_file.exists():
+            try:
+                saved_model = json.loads(self.model_file.read_text()).get("model")
+                if saved_model:
+                    self.model = Path(saved_model).expanduser().resolve()
+            except (OSError, json.JSONDecodeError, AttributeError):
+                pass
+        self.setting_file = sessions / "last_session.json"
+        self.active_session = self.load_last_session()
+        self.inputs, self.outputs = self.activate_session(self.active_session)
+        setting = self.session_setting(self.active_session)
+        current = {}
+        if setting.exists():
+            try:
+                current = json.loads(setting.read_text())
+            except (OSError, json.JSONDecodeError):
+                current = {}
+        defaults = default_session_settings(self.active_session)
+        defaults.update(current)
+        if not isinstance(defaults.get("takes"), list):
+            defaults["takes"] = []
+        setting.write_text(json.dumps(defaults, indent=2) + "\n")
         self.ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+
+    def load_last_session(self):
+        source = self.setting_file
+        legacy = self.sessions / "setting.json"
+        if not source.exists() and legacy.exists():
+            source = legacy
+        legacy = self.sessions / "setting.cnf"
+        if not source.exists() and legacy.exists():
+            source = legacy
+        if source.exists():
+            try:
+                data = json.loads(source.read_text())
+                raw_name = str(data.get("last_session") or "").strip()
+                name = safe_stem(raw_name) if raw_name else ""
+                if name and (self.sessions / name).is_dir():
+                    return name
+            except (OSError, json.JSONDecodeError, AttributeError):
+                pass
+        existing = sorted(
+            p.name for p in self.sessions.iterdir()
+            if p.is_dir()
+            and (p / "input").is_dir() and (p / "outputs").is_dir()
+        )
+        return existing[0] if existing else "session-1"
+
+    def activate_session(self, name):
+        session = safe_stem(name or "session-1")
+        root = self.sessions / session
+        inputs = root / "input"
+        outputs = root / "outputs"
+        inputs.mkdir(parents=True, exist_ok=True)
+        outputs.mkdir(parents=True, exist_ok=True)
+        self.active_session = session
+        self.inputs, self.outputs = inputs, outputs
+        self.setting_file.write_text(json.dumps({"last_session": session}, indent=2) + "\n")
+        setting = self.session_setting(session)
+        if not setting.exists():
+            setting.write_text(
+                json.dumps(default_session_settings(session), indent=2) + "\n"
+            )
+        return inputs, outputs
+
+    def session_setting(self, name):
+        session = safe_stem(name or "session-1")
+        root = self.sessions / session
+        root.mkdir(parents=True, exist_ok=True)
+        return root / "setting.json"
+
+    def session_dirs(self, name):
+        session = safe_stem(name or "default")
+        root = self.sessions / session
+        inputs, outputs = root / "input", root / "outputs"
+        inputs.mkdir(parents=True, exist_ok=True)
+        outputs.mkdir(parents=True, exist_ok=True)
+        return inputs, outputs
 
 
 CFG: Config = None  # set in main
@@ -96,7 +179,6 @@ class Runner:
         self.order = []
         self.current = None
         self.proc = None
-        self.interactive = CFG.interactive
         self.interactive_proc = None
         self.interactive_lines = queue.Queue()
         self.interactive_lock = threading.Lock()
@@ -165,6 +247,30 @@ class Runner:
             thread.start()
             return True
 
+    def load_interactive(self, params):
+        with self.interactive_lock:
+            if self.interactive_proc is not None:
+                return False, "interactive h3 is already loaded"
+            params["session_name"] = save_session(params)
+            CFG.activate_session(params["session_name"])
+            self._ensure_interactive(params)
+        return True, None
+
+    def send_interactive(self, line):
+        text = str(line).strip()
+        if not text:
+            return False, "input is required"
+        with self.interactive_lock:
+            if self.current is not None:
+                return False, "interactive h3 is busy rendering"
+            if self.interactive_proc is None:
+                return False, "load interactive h3 first"
+            if self.interactive_proc.poll() is not None:
+                self.interactive_proc = None
+                return False, "interactive h3 has exited; load it again"
+            self._interactive_send(text)
+        return True, None
+
     def _run_terminal(self, command):
         self.emit("terminal", {"running": True})
         try:
@@ -209,32 +315,39 @@ class Runner:
                 job.finished = time.time()
                 self.current = None
                 self.proc = None
+                record_take(job)
                 self.emit("job", job.summary())
                 self.emit("queue", self.queue_state())
                 self.emit("outputs", list_outputs())
 
     def _run(self, job):
-        if self.interactive:
+        if job.params.get("run_mode") == "interactive":
             return self._run_interactive(job)
         p = job.params
+        inputs, outputs = CFG.session_dirs(p.get("session_name"))
         stem = safe_stem(p.get("label") or "take")
         name = f"{stem}-{datetime.now().strftime('%m%d-%H%M%S')}.mp4"
-        out_path = CFG.outputs / name
+        out_path = outputs / name
 
         cmd = [str(CFG.h3), "--profile", "-d", str(CFG.model)]
         cmd += ["-p", p["prompt"]]
 
-        for img in p.get("ref_images", []):
-            cmd += ["--ref-image", str(CFG.inputs / img)]
-        for clip in p.get("ref_videos", []):
-            flag = "--ref-silent-video" if clip.get("silent") else "--ref-video"
-            cmd += [flag, str(CFG.inputs / clip["name"])]
-        for aud in p.get("ref_audio", []):
-            cmd += ["--ref-audio", str(CFG.inputs / aud)]
+        for ref in p.get("refs", []):
+            path = str(inputs / ref["name"])
+            if ref["kind"] == "image":
+                cmd += ["--ref-image", path]
+            elif ref["kind"] == "audio":
+                cmd += ["--ref-audio", path]
+            elif ref.get("mode") == "silent":
+                cmd += ["--ref-silent-video", path]
+            elif ref.get("mode") == "replace" and ref.get("pairedAudio"):
+                cmd += ["--ref-video-audio", path, str(inputs / ref["pairedAudio"])]
+            else:
+                cmd += ["--ref-video", path]
         if p.get("first_frame"):
-            cmd += ["--first-frame", str(CFG.inputs / p["first_frame"])]
+            cmd += ["--first-frame", str(inputs / p["first_frame"])]
         if p.get("last_frame"):
-            cmd += ["--last-frame", str(CFG.inputs / p["last_frame"])]
+            cmd += ["--last-frame", str(inputs / p["last_frame"])]
 
         cmd += ["--width", str(p["width"]), "--height", str(p["height"])]
         if p.get("render_width") and p.get("render_height"):
@@ -299,7 +412,8 @@ class Runner:
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0, env=env,
         )
         threading.Thread(target=self._read_interactive, daemon=True).start()
-        self._interactive_send(f"!output {CFG.outputs}")
+        _, outputs = CFG.session_dirs(p.get("session_name"))
+        self._interactive_send(f"!output {outputs}")
 
     def _read_interactive(self):
         buf = b""
@@ -338,13 +452,15 @@ class Runner:
 
     def _run_interactive(self, job):
         p = job.params
-        if p.get("ref_videos") or p.get("ref_audio"):
+        refs = p.get("refs") or []
+        if any(ref.get("kind") != "image" for ref in refs):
             job.state = "failed"
             job.error = "interactive h3 mode currently supports image references only"
             return
         job.state = "running"
         job.started = time.time()
         self._ensure_interactive(p)
+        inputs, _ = CFG.session_dirs(p.get("session_name"))
         commands = [
             f"!size {p['width']}x{p['height']}",
             f"!frames {p['frames']}",
@@ -365,12 +481,11 @@ class Runner:
             "!first clear",
             "!last clear",
         ])
-        commands.extend(f"!ref-image {CFG.inputs / n}" for n in p.get("ref_images", []))
-        commands.extend(f"!ref-audio {CFG.inputs / n}" for n in p.get("ref_audio", []))
+        commands.extend(f"!ref-image {inputs / ref['name']}" for ref in refs)
         if p.get("first_frame"):
-            commands.append(f"!first {CFG.inputs / p['first_frame']}")
+            commands.append(f"!first {inputs / p['first_frame']}")
         if p.get("last_frame"):
-            commands.append(f"!last {CFG.inputs / p['last_frame']}")
+            commands.append(f"!last {inputs / p['last_frame']}")
         self.emit("job", job.summary())
         for command in commands:
             self._interactive_send(command)
@@ -444,6 +559,29 @@ def safe_stem(text):
     return (stem or "take")[:48]
 
 
+def default_session_settings(name):
+    return {
+        "session_name": safe_stem(name or "session-1"),
+        "label": "",
+        "prompt": "",
+        "prompt_doc": [{"type": "text", "value": ""}],
+        "width": 512,
+        "height": 512,
+        "frames": 22,
+        "steps": 4,
+        "layers": 50,
+        "reuse": 1,
+        "seed": 42,
+        "run_mode": "oneshot",
+        "token_reduction": False,
+        "int8_row_fc2": False,
+        "ssd_streaming": False,
+        "refs": [],
+        "env": {"H3_ZERO_COPY_WEIGHTS": "0"},
+        "takes": [],
+    }
+
+
 def snap_frames(requested):
     for f in LEGAL_FRAMES:
         if f >= requested:
@@ -458,6 +596,63 @@ def write_sidecar(out_path, job):
     out_path.with_suffix(".json").write_text(json.dumps(meta, indent=2))
 
 
+def session_path(name):
+    return CFG.session_setting(name)
+
+
+def save_session(params):
+    name = safe_stem(params.get("session_name") or params.get("label") or "session-1")
+    path = CFG.session_setting(name)
+    params = dict(params)
+    params["session_name"] = name
+    existing = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+    takes = existing.get("takes", [])
+    if not isinstance(takes, list):
+        takes = []
+    params["takes"] = takes
+    path.write_text(json.dumps(params, indent=2) + "\n")
+    return name
+
+
+def record_take(job):
+    """Persist each completed render in its session settings."""
+    name = safe_stem(job.params.get("session_name") or "session-1")
+    path = CFG.session_setting(name)
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    takes = data.get("takes", [])
+    if not isinstance(takes, list):
+        takes = []
+    entry = job.summary()
+    if job.started and job.finished:
+        entry["duration_s"] = round(job.finished - job.started, 2)
+    takes.append(entry)
+    data["session_name"] = name
+    data["takes"] = takes
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def list_sessions():
+    sessions = []
+    for root in sorted(CFG.sessions.iterdir()):
+        path = root / "setting.json"
+        if not root.is_dir() or not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sessions.append({"name": root.name, "params": data, "mtime": path.stat().st_mtime})
+    return sessions
+
+
 def list_inputs():
     exts = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".wav", ".mp3", ".m4a"}
     items = []
@@ -465,8 +660,23 @@ def list_inputs():
         if p.is_file() and p.suffix.lower() in exts:
             kind = ("image" if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
                     else "video" if p.suffix.lower() in {".mp4", ".mov"} else "audio")
-            items.append({"name": p.name, "kind": kind, "size": p.stat().st_size})
+            item = {"name": p.name, "kind": kind, "size": p.stat().st_size}
+            if kind in {"video", "audio"}:
+                item["duration"] = probe_duration(p)
+            items.append(item)
     return items
+
+
+def probe_duration(path):
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        return round(float(result.stdout.strip()), 2)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
 
 
 def list_outputs():
@@ -513,14 +723,46 @@ def validate(params):
         errs.append(f"{w}x{h} is {w*h:,} pixels; the ceiling is {MAX_PIXELS:,}.")
     if not params.get("prompt", "").strip():
         errs.append("Write a prompt.")
-    refs = params.get("ref_images") or params.get("ref_videos") or params.get("ref_audio")
+    refs = params.get("refs") or []
+    if not isinstance(refs, list):
+        errs.append("References must be an ordered list.")
+        refs = []
+    for ref in refs:
+        if not isinstance(ref, dict) or ref.get("kind") not in {"image", "video", "audio"}:
+            errs.append("Each reference must have a valid kind.")
+            continue
+        if ref.get("kind") == "video" and ref.get("mode") == "replace" and not ref.get("pairedAudio"):
+            errs.append("Replacement audio is required for videos in replace mode.")
+        try:
+            duration = float(ref.get("duration") or 0)
+        except (TypeError, ValueError):
+            errs.append(f"Invalid duration for {ref.get('name', 'reference')}.")
+            duration = 0
+        if ref.get("kind") in {"video", "audio"} and duration and not 2 <= duration <= 15:
+            errs.append(f"{ref.get('name', 'Reference')} must be between 2 and 15 seconds.")
     anchors = params.get("first_frame") or params.get("last_frame")
     if refs and anchors:
         errs.append("Ref2VA references can't be combined with first/last frame anchors.")
-    if params.get("ref_audio") and not (params.get("ref_images") or params.get("ref_videos")):
+    images = [ref for ref in refs if ref.get("kind") == "image"]
+    videos = [ref for ref in refs if ref.get("kind") == "video"]
+    audio = [ref for ref in refs if ref.get("kind") == "audio"]
+    if audio and not (images or videos):
         errs.append("A standalone audio reference must accompany an image or video.")
-    if len(params.get("ref_images", [])) > 9:
+    if len(images) > 9:
         errs.append("At most 9 image references.")
+    if len(videos) > 3:
+        errs.append("At most 3 video references.")
+    if len(audio) > 3:
+        errs.append("At most 3 audio references.")
+    duration = 0
+    for ref in refs:
+        if isinstance(ref, dict):
+            try:
+                duration += float(ref.get("duration") or 0)
+            except (TypeError, ValueError):
+                pass
+    if duration > 15:
+        errs.append(f"Combined reference duration is {duration:.1f}s; the limit is 15s.")
     return errs
 
 
@@ -607,7 +849,10 @@ class Handler(BaseHTTPRequestHandler):
                 "workdir": str(CFG.workdir),
                 "inputs": str(CFG.inputs),
                 "outputs": str(CFG.outputs),
-                "interactive": CFG.interactive,
+                "session": CFG.active_session,
+                "setting": str(CFG.setting_file),
+                "session_setting": str(CFG.session_setting(CFG.active_session)),
+                "interactive": True,
                 "legal_frames": LEGAL_FRAMES,
                 "max_pixels": MAX_PIXELS,
             })
@@ -615,6 +860,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(list_inputs())
         if p == "/api/outputs":
             return self._json(list_outputs())
+        if p == "/api/sessions":
+            return self._json(list_sessions())
+        if p.startswith("/api/session/"):
+            name = Path(p[len("/api/session/"):]).name
+            path = session_path(name)
+            if not path.exists():
+                return self._send(404, b'{"error":"session not found"}')
+            CFG.activate_session(name)
+            data = json.loads(path.read_text())
+            data["session_name"] = safe_stem(name)
+            data["input_path"] = str(CFG.inputs)
+            data["output_path"] = str(CFG.outputs)
+            return self._json(data)
         if p == "/api/queue":
             return self._json({"queue": RUNNER.queue_state(),
                                "history": RUNNER.history()})
@@ -632,13 +890,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         p = unquote(u.path)
+        if p == "/api/upload":
+            return self._upload()
+        raw = self._body()
+        try:
+            data = json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return self._json({"error": "bad json"}, 400)
 
         if p == "/api/terminal":
-            raw = self._body()
-            try:
-                data = json.loads(raw or b"{}")
-            except json.JSONDecodeError:
-                return self._json({"error": "bad json"}, 400)
             command = str(data.get("command", "")).strip()
             if not command:
                 return self._json({"error": "command is required"}, 400)
@@ -646,20 +906,59 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "terminal is already running a command"}, 409)
             return self._json({"started": True})
 
-        if p == "/api/upload":
-            return self._upload()
+        if p == "/api/interactive/load":
+            ok, error = RUNNER.load_interactive(data)
+            return self._json({"started": ok, "error": error} if error else {"started": True},
+                              409 if error else 200)
 
-        raw = self._body()
-        try:
-            data = json.loads(raw or b"{}")
-        except json.JSONDecodeError:
-            return self._json({"error": "bad json"}, 400)
+        if p == "/api/interactive/input":
+            ok, error = RUNNER.send_interactive(data.get("line", ""))
+            return self._json({"sent": ok, "error": error} if error else {"sent": True},
+                              409 if error else 200)
+
+        if p == "/api/model":
+            model = Path(str(data.get("model", ""))).expanduser().resolve()
+            if not model.is_dir():
+                return self._json({"error": "model directory does not exist"}, 400)
+            if RUNNER.interactive_proc is not None or RUNNER.current is not None:
+                return self._json({"error": "stop the active h3 process before changing the model"}, 409)
+            CFG.model = model
+            CFG.model_file.write_text(json.dumps({"model": str(model)}, indent=2) + "\n")
+            return self._json({"model": str(model)})
+
+        if p == "/api/h3":
+            h3 = Path(str(data.get("h3", ""))).expanduser().resolve()
+            if not h3.is_file() or not os.access(h3, os.X_OK):
+                return self._json({"error": "h3 executable does not exist or is not executable"}, 400)
+            if RUNNER.interactive_proc is not None or RUNNER.current is not None:
+                return self._json({"error": "stop the active h3 process before changing the binary"}, 409)
+            CFG.h3 = h3
+            CFG.workdir = h3.parent
+            CFG.h3_file.write_text(json.dumps({"h3": str(h3)}, indent=2) + "\n")
+            return self._json({"h3": str(h3)})
+
+        if p == "/api/session/activate":
+            name = safe_stem(data.get("name") or "default")
+            CFG.activate_session(name)
+            return self._json({
+                "name": name,
+                "inputs": str(CFG.inputs),
+                "outputs": str(CFG.outputs),
+            })
+
+        if p == "/api/session/save":
+            name = save_session(data)
+            CFG.activate_session(name)
+            return self._json({"name": name, "inputs": str(CFG.inputs),
+                               "outputs": str(CFG.outputs)})
 
         if p == "/api/render":
             data["frames"] = snap_frames(int(data.get("frames", 22)))
             errs = validate(data)
             if errs:
                 return self._json({"errors": errs}, 400)
+            data["session_name"] = save_session(data)
+            CFG.activate_session(data["session_name"])
             job = RUNNER.submit(data)
             return self._json(job.summary())
 
@@ -678,10 +977,33 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/delete":
             name = Path(data.get("name", "")).name
-            for f in (CFG.outputs / name, (CFG.outputs / name).with_suffix(".json")):
+            kind = data.get("kind", "output")
+            if kind not in ("input", "output"):
+                return self._json({"error": "invalid delete kind"}, 400)
+            root = CFG.inputs if kind == "input" else CFG.outputs
+            target = root / name
+            for f in ((target,) if kind == "input"
+                      else (target, target.with_suffix(".json"))):
                 if f.exists():
                     f.unlink()
-            return self._json({"outputs": list_outputs()})
+            if kind == "output":
+                path = CFG.session_setting(CFG.active_session)
+                try:
+                    settings = json.loads(path.read_text())
+                    takes = settings.get("takes", [])
+                    if isinstance(takes, list):
+                        settings["takes"] = [
+                            take for take in takes if take.get("output") != name
+                        ]
+                        path.write_text(json.dumps(settings, indent=2) + "\n")
+                except (OSError, json.JSONDecodeError):
+                    pass
+            RUNNER.emit("inputs" if kind == "input" else "outputs",
+                        list_inputs() if kind == "input" else list_outputs())
+            return self._json({
+                "inputs": list_inputs(),
+                "outputs": list_outputs(),
+            })
 
         return self._send(404, b'{"error":"not found"}')
 
@@ -698,7 +1020,10 @@ class Handler(BaseHTTPRequestHandler):
             i += 1
         dst.write_bytes(data)
         RUNNER.emit("inputs", list_inputs())
-        return self._json({"name": dst.name, "inputs": list_inputs()})
+        item = next((entry for entry in list_inputs() if entry["name"] == dst.name), None)
+        return self._json({"name": dst.name, "kind": item["kind"] if item else None,
+                           "duration": item.get("duration") if item else None,
+                           "inputs": list_inputs()})
 
     def _events(self):
         q = RUNNER.subscribe()
@@ -734,10 +1059,6 @@ def main():
     ap = argparse.ArgumentParser(description="Local web UI for h3.c")
     ap.add_argument("--h3", required=True, help="path to the h3 binary")
     ap.add_argument("--model", required=True, help="path to the MiniMax-H3 directory")
-    ap.add_argument("--input", default=None, help="path to input directory (default: h3 workdir/sessions/input)")
-    ap.add_argument("--output", default=None, help="path to output directory (default: h3 workdir/sessions/outputs)")
-    ap.add_argument("--interactive", action="store_true",
-                    help="keep h3.c in interactive mode between renders")
     ap.add_argument("--port", type=int, default=8710)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
@@ -747,6 +1068,8 @@ def main():
         raise SystemExit(f"h3 binary not found: {CFG.h3}")
     if not CFG.model.exists():
         raise SystemExit(f"model directory not found: {CFG.model}")
+    CFG.model_file.write_text(json.dumps({"model": str(CFG.model)}, indent=2) + "\n")
+    CFG.h3_file.write_text(json.dumps({"h3": str(CFG.h3)}, indent=2) + "\n")
 
     RUNNER = Runner()
     srv = ThreadingHTTPServer((args.host, args.port), Handler)

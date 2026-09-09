@@ -1,2 +1,5 @@
+sessions/*/input/
+sessions/*/outputs/
+sessions/*/setting.json
 sessions/input/
 sessions/outputs/

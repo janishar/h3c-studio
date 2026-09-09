@@ -8,22 +8,23 @@ Python stdlib only — nothing to install.
 ```bash
 python3 h3studio.py \
   --h3    /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
-  --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3 \
-  --input  ./sessions/input \
-  --output ./sessions/outputs \
-  --interactive
+  --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3
 ```
 
 Open http://127.0.0.1:8710
 
-It reads and writes `sessions/input/` and `sessions/outputs/` next to the `h3`
-binary, so it shares
-directories with your command-line runs. Nothing is copied or duplicated.
+Each named session gets its own `sessions/<name>/input/` and
+`sessions/<name>/outputs/` directories inside the studio directory. Nothing is
+copied or duplicated between sessions.
+Each session stores its full UI state in `sessions/<name>/setting.json`.
+The last active session is tracked in `sessions/last_session.json` and restored
+when the web UI starts. If no session exists yet, `session-1` is created.
+Entering an existing session name restores its settings from that session's
+`setting.json`.
 
-`--interactive` keeps h3.c's REPL and reusable-session caches alive between
-renders, so the expensive model load is paid once per studio session. The
-default VS Code F5 profile enables this mode. Use the custom-path profile when
-the binary or model lives elsewhere.
+Choose One-shot or Interactive mode in the web UI. Interactive h3.c is started
+only after clicking Load h3.c, so starting the studio itself never loads the
+model.
 
 ## What it does
 
@@ -36,7 +37,8 @@ of 32 and stay under 768×1344; the duration slider only offers the 5+17n frame 
 and shows real seconds; Ref2VA references and first/last anchors are mutually
 exclusive and the mode switch enforces it.
 
-**Shot chaining.** "Chain →" on any take extracts its final frame into `sessions/input/`,
+**Shot chaining.** "Chain →" on any take extracts its final frame into the
+active session's `input/`,
 switches to anchor mode, and sets it as the next shot's first frame. That's the
 multi-shot continuity loop in two clicks.
 
