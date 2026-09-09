@@ -14,9 +14,9 @@
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
         "--input",
-        "${workspaceFolder}/input",
+        "${workspaceFolder}/sessions/input",
         "--output",
-        "${workspaceFolder}/outputs",
+        "${workspaceFolder}/sessions/outputs",
         "--interactive"
       ],
       "env": {
@@ -69,13 +69,13 @@
       "id": "inputPath",
       "type": "promptString",
       "description": "Full path to input directory",
-      "default": "${workspaceFolder}/input"
+      "default": "${workspaceFolder}/sessions/input"
     },
     {
       "id": "outputPath",
       "type": "promptString",
       "description": "Full path to output directory",
-      "default": "${workspaceFolder}/outputs"
+      "default": "${workspaceFolder}/sessions/outputs"
     }
   ]
 }

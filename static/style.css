@@ -48,7 +48,7 @@ code { font: 400 11px var(--mono); color: var(--ink-2); }
 .pathbuttons { display: flex; gap: 6px; margin-left: auto; }
 .pathbutton { padding: 5px 10px; font-size: 11px; background: rgba(191,189,182,.04); color: var(--ink-2); }
 .pathbutton.on { background: var(--raised); color: var(--ink); }
-.pathpanel { position: absolute; top: 39px; right: 52px; z-index: 5; min-width: 420px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--line-hi); border-radius: var(--r); box-shadow: 0 8px 22px rgba(0,0,0,.28); }
+.pathpanel { position: fixed; top: 58px; right: 52px; z-index: 1000; min-width: 420px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--line-hi); border-radius: var(--r); box-shadow: 0 8px 22px rgba(0,0,0,.28); }
 .pathpanel div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 3px 0; }
 .pathpanel b { color: var(--ink-2); font-size: 11px; font-weight: 500; }
 .pathpanel code { overflow-wrap: anywhere; color: var(--ink); }

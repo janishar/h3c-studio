@@ -9,14 +9,15 @@ Python stdlib only — nothing to install.
 python3 h3studio.py \
   --h3    /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
   --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3 \
-  --input  ./input \
-  --output ./outputs \
+  --input  ./sessions/input \
+  --output ./sessions/outputs \
   --interactive
 ```
 
 Open http://127.0.0.1:8710
 
-It reads and writes `input/` and `outputs/` next to the `h3` binary, so it shares
+It reads and writes `sessions/input/` and `sessions/outputs/` next to the `h3`
+binary, so it shares
 directories with your command-line runs. Nothing is copied or duplicated.
 
 `--interactive` keeps h3.c's REPL and reusable-session caches alive between
@@ -35,7 +36,7 @@ of 32 and stay under 768×1344; the duration slider only offers the 5+17n frame 
 and shows real seconds; Ref2VA references and first/last anchors are mutually
 exclusive and the mode switch enforces it.
 
-**Shot chaining.** "Chain →" on any take extracts its final frame into `input/`,
+**Shot chaining.** "Chain →" on any take extracts its final frame into `sessions/input/`,
 switches to anchor mode, and sets it as the next shot's first frame. That's the
 multi-shot continuity loop in two clicks.
 

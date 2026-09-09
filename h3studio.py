@@ -40,8 +40,9 @@ class Config:
         self.model = Path(args.model).resolve()
         self.workdir = self.h3.parent
         # Use provided paths or default to workdir
-        self.inputs = Path(args.input).resolve() if args.input else (self.workdir / "input").resolve()
-        self.outputs = Path(args.output).resolve() if args.output else (self.workdir / "outputs").resolve()
+        sessions = self.workdir / "sessions"
+        self.inputs = Path(args.input).resolve() if args.input else (sessions / "input").resolve()
+        self.outputs = Path(args.output).resolve() if args.output else (sessions / "outputs").resolve()
         self.interactive = args.interactive
         self.inputs.mkdir(parents=True, exist_ok=True)
         self.outputs.mkdir(parents=True, exist_ok=True)
@@ -528,7 +529,13 @@ def validate(params):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, format, *args):
         pass
 
     # -- plumbing
@@ -727,8 +734,8 @@ def main():
     ap = argparse.ArgumentParser(description="Local web UI for h3.c")
     ap.add_argument("--h3", required=True, help="path to the h3 binary")
     ap.add_argument("--model", required=True, help="path to the MiniMax-H3 directory")
-    ap.add_argument("--input", default=None, help="path to input directory (default: h3 workdir/input)")
-    ap.add_argument("--output", default=None, help="path to output directory (default: h3 workdir/outputs)")
+    ap.add_argument("--input", default=None, help="path to input directory (default: h3 workdir/sessions/input)")
+    ap.add_argument("--output", default=None, help="path to output directory (default: h3 workdir/sessions/outputs)")
     ap.add_argument("--interactive", action="store_true",
                     help="keep h3.c in interactive mode between renders")
     ap.add_argument("--port", type=int, default=8710)

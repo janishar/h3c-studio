@@ -1,5 +1,5 @@
 {
-  "python.defaultInterpreterPath": "/usr/bin/python3",
+  "python.defaultInterpreterPath": "/opt/miniconda3/envs/ai/bin/python",
   "python.linting.enabled": true,
   "python.linting.pylintEnabled": false,
   "editor.formatOnSave": false,
@@ -25,5 +25,7 @@
   "search.exclude": {
     "**/__pycache__": true,
     "**/node_modules": true
-  }
+	},
+	"python-envs.defaultEnvManager": "ms-python.python:conda",
+	"python-envs.defaultPackageManager": "ms-python.python:conda"
 }
