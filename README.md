@@ -9,15 +9,34 @@ Go stdlib only — no third-party dependencies.
 GOCACHE=$(pwd)/.gocache go build -o ./dist/h3studio .
 ```
 
-## Run
+## Run - Development (with hot reload)
 
 ```bash
 ./dist/h3studio \
   --h3 /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
-  --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3
+  --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3 \
+  --host 127.0.0.1 \
+  --port 8710 \
+  --dev
 ```
 
 Open http://127.0.0.1:8710
+
+Hot reload is **enabled** - static files (CSS/JS) auto-reload on changes.
+
+**Flag:** Use `--dev` to enable hot reload.
+
+## Run - Production
+
+```bash
+./dist/h3studio \
+  --h3 /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
+  --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3 \
+  --host 0.0.0.0 \
+  --port 8710
+```
+
+Hot reload is **disabled** for security (no authentication).
 
 Each named session gets its own `sessions/<name>/input/` and
 `sessions/<name>/outputs/` directories inside the studio directory. Nothing is

@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"h3studio/server"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func main() {
@@ -18,6 +21,7 @@ func main() {
 	model := flag.String("model", "", "path to the MiniMax-H3 directory")
 	port := flag.Int("port", 8710, "port")
 	host := flag.String("host", "127.0.0.1", "host")
+	dev := flag.Bool("dev", false, "enable hot reload (dev mode)")
 	flag.Parse()
 	if *h3 == "" || *model == "" {
 		flag.Usage()
@@ -41,6 +45,19 @@ func main() {
 	runner := server.NewRunner(cfg)
 	app := server.NewApp(cfg, runner)
 	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", *host, *port), Handler: app}
+
+	// Start file watcher for hot reload (dev only)
+	if *dev {
+		watcher, err := startFileWatcher(cfg.Static, runner)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: file watcher failed to start: %v\n", err)
+		} else {
+			defer watcher.Close()
+			fmt.Println("  File watcher: enabled (static files will auto-reload)")
+		}
+	} else {
+		fmt.Println("  File watcher: disabled (use --dev to enable)")
+	}
 
 	fmt.Printf("h3 studio  →  http://%s:%d\n", *host, *port)
 	fmt.Printf("  binary   %s\n", cfg.H3)
@@ -68,4 +85,47 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// startFileWatcher watches the static directory for changes and triggers a reload
+func startFileWatcher(staticDir string, runner *server.Runner) (*fsnotify.Watcher, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+
+	// Add the static directory to watch
+	if err := watcher.Add(staticDir); err != nil {
+		watcher.Close()
+		return nil, err
+	}
+
+	// Watch for changes in static files
+	go func() {
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				// Only reload on write events (create, write, remove)
+				if event.Op&fsnotify.Write == fsnotify.Write ||
+					event.Op&fsnotify.Create == fsnotify.Create ||
+					event.Op&fsnotify.Remove == fsnotify.Remove {
+					// Check if it's a static file
+					if filepath.Ext(event.Name) != "" {
+						fmt.Printf("  [Hot Reload] %s changed - reloading...\n", event.Name)
+						runner.ReloadClients()
+					}
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				fmt.Fprintf(os.Stderr, "File watcher error: %v\n", err)
+			}
+		}
+	}()
+
+	return watcher, nil
 }
