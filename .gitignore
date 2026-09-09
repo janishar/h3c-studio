@@ -1,5 +1,6 @@
-sessions/*/input/
-sessions/*/outputs/
-sessions/*/setting.json
-sessions/input/
-sessions/outputs/
+sessions/**
+!sessions/.keep
+/h3studio
+/bin/
+/.gocache/
+/.gomodcache/

@@ -1,13 +1,19 @@
 # h3 studio
 
 A local web control surface for [antirez/h3.c](https://github.com/antirez/h3.c).
-Python stdlib only — nothing to install.
+Go stdlib only — no third-party dependencies.
+
+## Build
+
+```bash
+GOCACHE=$(pwd)/.gocache go build -o ./h3studio .
+```
 
 ## Run
 
 ```bash
-python3 h3studio.py \
-  --h3    /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
+./h3studio \
+  --h3 /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
   --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3
 ```
 
@@ -64,7 +70,7 @@ Defaults assume a 128 GiB machine; raising depth can help hide slow reads.
 ## Limits
 
 - One render at a time, deliberately.
-- Stop sends SIGINT; h3 may take a moment to unwind.
+- Stop sends SIGTERM, then SIGKILL after a short timeout; h3 may take a moment to unwind.
 - Uploads are held in memory before writing, so very large reference videos will
   be slow to attach.
 - Bound to 127.0.0.1. There is no authentication — don't expose it.
