@@ -6,13 +6,13 @@ Go stdlib only — no third-party dependencies.
 ## Build
 
 ```bash
-GOCACHE=$(pwd)/.gocache go build -o ./h3studio .
+GOCACHE=$(pwd)/.gocache go build -o ./dist/h3studio .
 ```
 
 ## Run
 
 ```bash
-./h3studio \
+./dist/h3studio \
   --h3 /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
   --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3
 ```

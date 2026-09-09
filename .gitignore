@@ -1,6 +1,5 @@
 sessions/**
 !sessions/.keep
-/h3studio
-/bin/
+/dist/
 /.gocache/
 /.gomodcache/

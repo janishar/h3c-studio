@@ -1,0 +1,59 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build: h3studio (dist)",
+      "type": "shell",
+      "command": "go",
+      "args": ["build", "-o", "./dist/h3studio", "."],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "GOCACHE": "${workspaceFolder}/.gocache"
+        }
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "run: h3studio (dist)",
+      "type": "shell",
+      "command": "./dist/h3studio",
+      "args": [
+        "--h3",
+        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "--model",
+        "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H3_ZERO_COPY_WEIGHTS": "0"
+        }
+      },
+      "dependsOn": ["build: h3studio (dist)"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^never-match-anything$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^h3 studio",
+          "endsPattern": "^h3 studio"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}

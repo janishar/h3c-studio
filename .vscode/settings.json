@@ -1,31 +1,31 @@
 {
-  "python.defaultInterpreterPath": "/opt/miniconda3/envs/ai/bin/python",
-  "python.linting.enabled": true,
-  "python.linting.pylintEnabled": false,
   "editor.formatOnSave": false,
   "editor.rulers": [88, 120],
   "files.exclude": {
-    "**/__pycache__": true,
-    "**/*.pyc": true,
+    "**/.gocache": true,
+    "**/.gomodcache": true,
     "**/.DS_Store": true
   },
   "files.watcherExclude": {
-    "**/__pycache__": true,
+    "**/.gocache/**": true,
+    "**/.gomodcache/**": true,
     "**/node_modules": true,
     "**/.git/objects/**": true
   },
-  "[python]": {
-    "editor.defaultFormatter": null,
-    "editor.formatOnSave": false
+  "[go]": {
+    "editor.defaultFormatter": "golang.go",
+    "editor.formatOnSave": true
   },
   "[javascript]": {
     "editor.defaultFormatter": null,
     "editor.formatOnSave": false
   },
   "search.exclude": {
-    "**/__pycache__": true,
+    "**/.gocache": true,
+    "**/.gomodcache": true,
     "**/node_modules": true
-	},
-	"python-envs.defaultEnvManager": "ms-python.python:conda",
-	"python-envs.defaultPackageManager": "ms-python.python:conda"
+  },
+  "go.toolsEnvVars": {
+    "GOCACHE": "${workspaceFolder}/.gocache"
+  }
 }

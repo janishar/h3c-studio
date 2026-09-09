@@ -3,43 +3,57 @@
   "configurations": [
     {
       "name": "h3 studio (web UI)",
-      "type": "debugpy",
+      "type": "go",
       "request": "launch",
-      "program": "${workspaceFolder}/h3studio.py",
-      "console": "integratedTerminal",
-      "justMyCode": true,
+      "mode": "auto",
+      "program": "${workspaceFolder}",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GOCACHE": "${workspaceFolder}/.gocache",
+        "H3_ZERO_COPY_WEIGHTS": "0"
+      },
       "args": [
         "--h3",
         "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
-      ],
-      "env": {
-        "H3_ZERO_COPY_WEIGHTS": "0"
-      },
-      "cwd": "${workspaceFolder}",
-      "stopOnEntry": false,
-      "showReturnValue": false
+      ]
     },
     {
       "name": "h3 studio (custom paths)",
-      "type": "debugpy",
+      "type": "go",
       "request": "launch",
-      "program": "${workspaceFolder}/h3studio.py",
-      "console": "integratedTerminal",
-      "justMyCode": true,
+      "mode": "auto",
+      "program": "${workspaceFolder}",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GOCACHE": "${workspaceFolder}/.gocache",
+        "H3_ZERO_COPY_WEIGHTS": "0"
+      },
       "args": [
         "--h3",
         "${input:h3Path}",
         "--model",
         "${input:modelPath}"
-      ],
+      ]
+    },
+    {
+      "name": "h3 studio (dist build)",
+      "type": "go",
+      "request": "launch",
+      "mode": "exec",
+      "program": "${workspaceFolder}/dist/h3studio",
+      "preLaunchTask": "build: h3studio (dist)",
+      "cwd": "${workspaceFolder}",
       "env": {
         "H3_ZERO_COPY_WEIGHTS": "0"
       },
-      "cwd": "${workspaceFolder}",
-      "stopOnEntry": false,
-      "showReturnValue": false
+      "args": [
+        "--h3",
+        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "--model",
+        "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
+      ]
     }
   ],
   "inputs": [
