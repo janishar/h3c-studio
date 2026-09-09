@@ -106,21 +106,21 @@ function insertMention(ref) {
   if (!ref.attached) addRef(ref);
   const attached = state.refs.find((item) => item.name === ref.name);
   if (!attached) return;
-  const index = state.mention?.textIndex;
-  if (index == null) return;
-  const textNode = $("prompt").childNodes[index];
-  if (!textNode) return;
-  const value = textNode.nodeValue || "";
-  const start = state.mention.start;
-  textNode.nodeValue = value.slice(0, start) + value.slice(state.mention.end);
+  const mention = state.mention;
+  const textNode = mention?.node;
+  if (!textNode || !$("prompt").contains(textNode)) return;
+  const range = document.createRange();
+  range.setStart(textNode, mention.start);
+  range.setEnd(textNode, mention.end);
+  range.deleteContents();
   const chip = document.createElement("span");
   chip.className = "mention-chip";
   chip.contentEditable = "false";
   chip.dataset.refId = attached.id;
   chip.textContent = `@${attached.name} · ${slotLabel(state.refs, state.refs.indexOf(attached))}`;
-  textNode.parentNode.insertBefore(chip, textNode.nextSibling);
   const space = document.createTextNode(" ");
-  textNode.parentNode.insertBefore(space, chip.nextSibling);
+  range.insertNode(chip);
+  chip.parentNode.insertBefore(space, chip.nextSibling);
   const caret = document.createRange();
   caret.setStart(space, 1);
   caret.collapse(true);
@@ -153,6 +153,24 @@ function insertRefAtCaret(ref) {
   getSelection().removeAllRanges(); getSelection().addRange(range);
   $("prompt").focus();
   readPromptEditor(); sync();
+}
+
+function insertPromptText(text, savedRange = null) {
+  if (!text) return;
+  const selection = getSelection();
+  const range = savedRange || (selection?.rangeCount ? selection.getRangeAt(0) : null);
+  if (!range) return;
+  if (!$("prompt").contains(range.commonAncestorContainer)) return;
+  if (!savedRange) selection.removeAllRanges();
+  range.deleteContents();
+  const node = document.createTextNode(text);
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  readPromptEditor();
+  sync();
 }
 
 /* ── setup ─────────────────────────────────────────────────────── */
@@ -620,10 +638,14 @@ function mkBtn(label, fn) {
 function select(name) {
   state.selected = name;
   const v = $("player");
+  v.pause();
+  v.muted = false;
+  v.volume = 1;
   v.src = `/media/output/${encodeURIComponent(name)}`;
+  v.load();
   v.classList.add("on");
   $("viewerEmpty").hidden = true;
-  v.play().catch(() => {});
+  v.play().catch((error) => appendLog("!! Playback did not start automatically: " + error.message));
   renderTakes();
 }
 
@@ -673,11 +695,13 @@ async function submit(p) {
 
 function showJob(j) {
   state.job = j;
-  const busy = j && (j.state === "running");
+  const busy = j && (j.state === "running" || j.state === "cancelling");
   $("running").hidden = !busy;
   $("lamp").classList.toggle("busy", !!busy);
   $("lampText").textContent = busy ? (j.phase || "rendering") : "idle";
   $("render").disabled = !!busy || !!localErrors(params()).length;
+  $("cancel").disabled = !!(busy && j.state === "cancelling");
+  $("cancel").textContent = j?.state === "cancelling" ? "Stopping…" : "Stop";
 
   if (!j) return;
   $("phaseName").textContent = j.phase || "starting";
@@ -734,7 +758,13 @@ function connect() {
     if (kind === "hello") {
       state.inputs = payload.inputs; state.outputs = payload.outputs;
       renderLibrary(); renderTakes(); renderQueue(payload.queue);
-      const run = payload.queue.find((j) => j.state === "running");
+      $("terminalOutput").textContent = "";
+      if (payload.terminal_log) $("terminalOutput").textContent = payload.terminal_log;
+      else [...(payload.history || []).reverse(), ...(payload.queue || [])].forEach((job) => {
+        (job.log || []).forEach((line) => appendLog(line));
+      });
+      $("terminalOutput").scrollTop = $("terminalOutput").scrollHeight;
+      const run = payload.queue.find((j) => j.state === "running" || j.state === "cancelling");
       if (run) showJob(run);
     } else if (kind === "job") {
       showJob(payload);
@@ -798,7 +828,7 @@ function init() {
     const query = match[2];
     const options = promptCandidates(query);
     state.mention = {
-       textIndex: Array.from($("prompt").childNodes).indexOf(node),
+       node,
        start: before.length - match[0].length + match[1].length,
        end: before.length,
        options,
@@ -841,6 +871,24 @@ function init() {
     sync();
   });
   $("prompt").addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      document.execCommand(event.shiftKey ? "redo" : "undo");
+      readPromptEditor();
+      sync();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+      closeMentionMenu();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
+      event.preventDefault();
+      closeMentionMenu();
+      const savedRange = getSelection()?.rangeCount ? getSelection().getRangeAt(0).cloneRange() : null;
+      navigator.clipboard?.readText().then((text) => insertPromptText(text, savedRange)).catch(() => {});
+      return;
+    }
     if (event.key === "Backspace") {
       const selection = getSelection();
       if (selection?.isCollapsed && selection.anchorNode?.nodeType === Node.TEXT_NODE &&
@@ -995,9 +1043,14 @@ function init() {
 
   $("prompt").addEventListener("paste", (e) => {
     const text = e.clipboardData?.getData("text/plain");
-    if (text == null) return;
+    if (text == null) {
+      e.preventDefault();
+      const savedRange = getSelection()?.rangeCount ? getSelection().getRangeAt(0).cloneRange() : null;
+      navigator.clipboard?.readText().then((value) => insertPromptText(value, savedRange)).catch(() => {});
+      return;
+    }
     e.preventDefault();
-    document.execCommand("insertText", false, text);
+    insertPromptText(text);
   });
 
   $("file").onchange = (e) => upload(e.target.files);
@@ -1019,8 +1072,27 @@ function init() {
                label: (base.label || "take") + "-" + (i + 1) });
     }
   };
-  $("cancel").onclick = () =>
-    fetch("/api/cancel", { method: "POST", body: JSON.stringify({ id: state.job?.id }) });
+  $("cancel").onclick = async () => {
+    const button = $("cancel");
+    button.disabled = true;
+    button.textContent = "Stopping…";
+    try {
+      const res = await fetch("/api/cancel", {
+        method: "POST",
+        body: JSON.stringify({ id: state.job?.id }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        button.disabled = false;
+        button.textContent = "Stop";
+        appendLog("!! Could not stop the active render.");
+      }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Stop";
+      appendLog("!! Stop failed: " + error.message);
+    }
+  };
 
   document.querySelector(".tabs").onclick = (e) => {
     if (!e.target.dataset.tab) return;

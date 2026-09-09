@@ -116,7 +116,14 @@
 
     <div class="block">
       <div class="blockhead"><h2>Duration</h2><span class="fpsbadge">24 FPS</span></div>
-      <input type="range" id="frames" min="0" max="21" value="1">
+      <div class="duration-slider">
+        <input type="range" id="frames" min="0" max="21" value="1">
+        <div class="duration-markers" aria-hidden="true">
+          <span style="left: 33.333%">5</span>
+          <span style="left: 66.667%">10</span>
+          <span style="left: 100%">15</span>
+        </div>
+      </div>
       <div class="readout"><b id="frameCount">22</b> frames<span id="frameSecs">0.92 s</span></div>
       <p class="hint">H3 converts requests to its legal frame grid: 5 + 17n.</p>
     </div>
@@ -167,7 +174,7 @@
   <!-- ─────────────────────────────── stage ─────────────────────────────── -->
   <section class="pane stage">
     <div class="viewer">
-      <video id="player" controls playsinline></video>
+      <video id="player" controls playsinline preload="auto"></video>
       <div class="empty" id="viewerEmpty">
         <p>No take selected</p>
         <span>Render something, or pick from the takes on the right.</span>

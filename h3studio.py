@@ -131,6 +131,12 @@ class Config:
         outputs.mkdir(parents=True, exist_ok=True)
         return inputs, outputs
 
+    def terminal_log(self, name=None):
+        session = safe_stem(name or self.active_session)
+        path = self.sessions / session / "terminal.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
 
 CFG: Config = None  # set in main
 
@@ -166,6 +172,7 @@ class Job:
             "finished": self.finished,
             "params": self.params,
             "command": self.command,
+            "log": self.log[-400:],
             "profile": self.profile,
         }
 
@@ -202,6 +209,10 @@ class Runner:
                 self.listeners.remove(q)
 
     def emit(self, kind, payload):
+        if kind == "terminal" and payload.get("line"):
+            path = CFG.terminal_log()
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(str(payload["line"]) + "\n")
         msg = json.dumps({"kind": kind, "payload": payload})
         with self.lock:
             dead = []
@@ -216,6 +227,7 @@ class Runner:
     # -- queue control
 
     def submit(self, params):
+        CFG.terminal_log(params.get("session_name")).write_text("", encoding="utf-8")
         job = Job(params)
         self.jobs[job.id] = job
         self.order.append(job.id)
@@ -232,12 +244,30 @@ class Runner:
             self.emit("queue", self.queue_state())
             return True
         if job.state == "running" and self.proc:
-            try:
-                self.proc.send_signal(signal.SIGINT)
-            except Exception:
-                pass
+            job.state = "cancelling"
+            proc = self.proc
+            threading.Thread(target=self._stop_process, args=(proc,), daemon=True).start()
             return True
         return False
+
+    @staticmethod
+    def _stop_process(proc):
+        """Stop the whole render process group and force memory release."""
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        finally:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
 
     def run_terminal(self, command):
         with self.terminal_lock:
@@ -382,7 +412,7 @@ class Runner:
         self.proc = subprocess.Popen(
             cmd, cwd=str(CFG.workdir), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            bufsize=0,
+            bufsize=0, start_new_session=True,
         )
         self._pump(job, self.proc)
         code = self.proc.wait()
@@ -1038,6 +1068,7 @@ class Handler(BaseHTTPRequestHandler):
                 "history": RUNNER.history(),
                 "outputs": list_outputs(),
                 "inputs": list_inputs(),
+                "terminal_log": CFG.terminal_log().read_text(encoding="utf-8"),
             }})
             self.wfile.write(f"data: {hello}\n\n".encode())
             self.wfile.flush()
