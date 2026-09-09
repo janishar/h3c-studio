@@ -1272,6 +1272,58 @@ function init() {
     if (command?.open && !e.target.closest("details.cmd")) command.open = false;
   });
 
+  // Terminal resize functionality
+  const resizeHandle = $("resizeHandle");
+  const consoleContainer = $("consoleContainer");
+  let isResizing = false;
+  let startY = 0;
+  let startHeight = 0;
+
+  resizeHandle.addEventListener("mousedown", (e) => {
+    isResizing = true;
+    startY = e.clientY;
+    startHeight = consoleContainer.offsetHeight;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    e.preventDefault();
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!isResizing) return;
+
+    const deltaY = startY - e.clientY;
+    const newHeight = Math.max(150, Math.min(startHeight + deltaY, 500));
+    consoleContainer.style.height = `${newHeight}px`;
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (isResizing) {
+      isResizing = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+  });
+
+  // Touch support for mobile
+  resizeHandle.addEventListener("touchstart", (e) => {
+    isResizing = true;
+    startY = e.touches[0].clientY;
+    startHeight = consoleContainer.offsetHeight;
+    e.preventDefault();
+  });
+
+  document.addEventListener("touchmove", (e) => {
+    if (!isResizing) return;
+
+    const deltaY = startY - e.touches[0].clientY;
+    const newHeight = Math.max(150, Math.min(startHeight + deltaY, 500));
+    consoleContainer.style.height = `${newHeight}px`;
+  });
+
+  document.addEventListener("touchend", () => {
+    isResizing = false;
+  });
+
   connect();
   sync();
 }

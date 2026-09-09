@@ -188,11 +188,12 @@
       <button class="ghost sm" id="cancel">Stop</button>
     </div>
 
-    <div class="console">
+    <div class="console" id="consoleContainer">
       <div class="conhead">
         <h2>Terminal</h2>
         <div class="tabs"><button class="on" data-tab="log">Output</button><button data-tab="profile">Timing</button></div>
       </div>
+      <div class="resize-handle" id="resizeHandle"></div>
       <pre id="terminalOutput"></pre>
       <form class="terminalform" id="terminalForm">
         <span class="terminalprompt">$</span>
