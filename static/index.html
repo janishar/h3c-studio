@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>h3 studio</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="mark">h3 <span>studio</span></div>
+  <div class="paths" id="paths"></div>
+  <div class="lamp" id="lamp"><i></i><span id="lampText">idle</span></div>
+</header>
+
+<main class="grid">
+
+  <!-- ─────────────────────────────── setup ─────────────────────────────── -->
+  <section class="pane setup">
+
+    <div class="block">
+      <div class="blockhead">
+        <h2>References</h2>
+        <div class="modeswitch" id="modeSwitch">
+          <button data-mode="ref" class="on">Reference</button>
+          <button data-mode="anchor">Anchors</button>
+        </div>
+      </div>
+
+      <div class="drop" id="drop">
+        <p>Drop images, clips or audio here</p>
+        <label class="ghost">browse<input type="file" id="file" multiple hidden></label>
+      </div>
+
+      <div id="refMode">
+        <ol class="reflist" id="refList"></ol>
+        <p class="hint" id="refHint">Order sets <code>&lt;Picture 1&gt;</code>, <code>&lt;Picture 2&gt;</code>… Drag to reorder.</p>
+      </div>
+
+      <div id="anchorMode" hidden>
+        <div class="anchorpair">
+          <div class="anchor" id="anchorFirst"><span>First frame</span><em>none</em></div>
+          <div class="anchor" id="anchorLast"><span>Last frame</span><em>none</em></div>
+        </div>
+        <p class="hint">Anchors use FL2VA. Match your image aspect to the output aspect or the first frame gets stretched.</p>
+      </div>
+
+      <div class="library" id="library"></div>
+    </div>
+
+    <div class="block">
+      <h2>Prompt</h2>
+      <textarea id="prompt" rows="7" placeholder="Scene: …&#10;Action: …&#10;Camera: …&#10;Look: …&#10;Audio: …"></textarea>
+      <div class="row">
+        <button class="ghost sm" id="scaffold">Insert structure</button>
+        <span class="hint" id="promptCount"></span>
+      </div>
+    </div>
+
+    <div class="block">
+      <h2>Canvas</h2>
+      <div class="chips" id="sizePresets"></div>
+      <div class="fields">
+        <label>Width<input type="number" id="width" step="32" value="512"></label>
+        <label>Height<input type="number" id="height" step="32" value="512"></label>
+      </div>
+      <div class="fields">
+        <label>Internal render<select id="internal">
+          <option value="1">Full</option>
+          <option value="0.75">75% — fast</option>
+          <option value="0.625">62% — aggressive</option>
+        </select></label>
+        <label>Seed<div class="seedrow">
+          <input type="number" id="seed" value="42">
+          <button class="ghost sm" id="dice" title="Random seed">↻</button>
+        </div></label>
+      </div>
+      <p class="warn" id="sizeWarn" hidden></p>
+    </div>
+
+    <div class="block">
+      <h2>Duration</h2>
+      <input type="range" id="frames" min="0" max="21" value="1">
+      <div class="readout"><b id="frameCount">22</b> frames<span id="frameSecs">0.92 s</span></div>
+    </div>
+
+    <div class="block">
+      <h2>Quality</h2>
+      <div class="chips" id="qualityPresets"></div>
+      <div class="fields three">
+        <label>Steps<input type="number" id="steps" min="1" max="50" value="4"></label>
+        <label>Layers<input type="number" id="layers" min="20" max="50" value="50"></label>
+        <label>Reuse<input type="number" id="reuse" min="1" max="3" value="1"></label>
+      </div>
+      <label class="check"><input type="checkbox" id="tokenReduction"> Token reduction<em>faster, can shift composition</em></label>
+      <label class="check"><input type="checkbox" id="int8RowFc2"> Fast int8 FC2<em>M5 only</em></label>
+    </div>
+
+    <details class="block">
+      <summary><h2>Environment</h2></summary>
+      <label class="check"><input type="checkbox" id="zeroCopy" checked> Copy weights into memory<em>set this when the model lives on an external drive</em></label>
+      <label class="check"><input type="checkbox" id="ssdStreaming"> Stream DiT from disk<em>cuts memory, much slower over USB</em></label>
+      <div class="fields">
+        <label>Qwen prefetch depth<input type="number" id="prefetchDepth" min="1" max="6" placeholder="default"></label>
+        <label>Prefetch workers<input type="number" id="prefetchWorkers" min="1" max="8" placeholder="default"></label>
+      </div>
+    </details>
+
+    <div class="block">
+      <label class="labelfield">Take name<input type="text" id="label" placeholder="shot-01"></label>
+      <div class="actions">
+        <button class="go" id="render">Render</button>
+        <button class="ghost" id="queueBtn">Queue 3 seeds</button>
+      </div>
+      <p class="errors" id="errors" hidden></p>
+      <details class="cmd"><summary>Command</summary><pre id="cmdPreview"></pre></details>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────── stage ─────────────────────────────── -->
+  <section class="pane stage">
+    <div class="viewer">
+      <video id="player" controls playsinline></video>
+      <div class="empty" id="viewerEmpty">
+        <p>No take selected</p>
+        <span>Render something, or pick from the takes on the right.</span>
+      </div>
+    </div>
+
+    <div class="running" id="running" hidden>
+      <div class="phase"><span id="phaseName">starting</span><b id="phasePct"></b></div>
+      <div class="track"><i id="phaseBar"></i></div>
+      <div class="elapsed" id="elapsed"></div>
+      <button class="ghost sm" id="cancel">Stop</button>
+    </div>
+
+    <div class="console">
+      <div class="conhead">
+        <h2>Log</h2>
+        <div class="tabs"><button class="on" data-tab="log">Output</button><button data-tab="profile">Timing</button></div>
+      </div>
+      <pre id="log"></pre>
+      <table id="profile" hidden><tbody></tbody></table>
+    </div>
+
+    <div class="queue" id="queueWrap" hidden>
+      <h2>Queued</h2>
+      <ul id="queue"></ul>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────── takes ─────────────────────────────── -->
+  <section class="pane takes">
+    <div class="blockhead sticky">
+      <h2>Takes</h2>
+      <span class="count" id="takeCount"></span>
+    </div>
+    <ul class="takelist" id="takes"></ul>
+  </section>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

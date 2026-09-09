@@ -1,0 +1,29 @@
+{
+  "python.defaultInterpreterPath": "/usr/bin/python3",
+  "python.linting.enabled": true,
+  "python.linting.pylintEnabled": false,
+  "editor.formatOnSave": false,
+  "editor.rulers": [88, 120],
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.DS_Store": true
+  },
+  "files.watcherExclude": {
+    "**/__pycache__": true,
+    "**/node_modules": true,
+    "**/.git/objects/**": true
+  },
+  "[python]": {
+    "editor.defaultFormatter": null,
+    "editor.formatOnSave": false
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": null,
+    "editor.formatOnSave": false
+  },
+  "search.exclude": {
+    "**/__pycache__": true,
+    "**/node_modules": true
+  }
+}

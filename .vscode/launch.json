@@ -1,0 +1,59 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "h3 studio (interactive)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/h3studio.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "--h3",
+        "/Volumes/ALI-T9/AI/minmaxh3/h3.c/h3",
+        "--model",
+        "/Volumes/ALI-T9/AI/minmaxh3/MiniMax-H3"
+      ],
+      "env": {
+        "H3_ZERO_COPY_WEIGHTS": "0"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": false,
+      "showReturnValue": false
+    },
+    {
+      "name": "h3 studio (custom paths)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/h3studio.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "--h3",
+        "${input:h3Path}",
+        "--model",
+        "${input:modelPath}"
+      ],
+      "env": {
+        "H3_ZERO_COPY_WEIGHTS": "0"
+      },
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": false,
+      "showReturnValue": false
+    }
+  ],
+  "inputs": [
+    {
+      "id": "h3Path",
+      "type": "promptString",
+      "description": "Full path to h3 binary",
+      "default": "/Volumes/ALI-T9/AI/minmaxh3/h3.c/h3"
+    },
+    {
+      "id": "modelPath",
+      "type": "promptString",
+      "description": "Full path to MiniMax-H3 model directory",
+      "default": "/Volumes/ALI-T9/AI/minmaxh3/MiniMax-H3"
+    }
+  ]
+}
