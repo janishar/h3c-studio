@@ -7,14 +7,22 @@ Python stdlib only — nothing to install.
 
 ```bash
 python3 h3studio.py \
-  --h3    /Volumes/ALI-T9/AI/minmaxh3/h3.c/h3 \
-  --model /Volumes/ALI-T9/AI/minmaxh3/MiniMax-H3
+  --h3    /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
+  --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3 \
+  --input  ./input \
+  --output ./outputs \
+  --interactive
 ```
 
 Open http://127.0.0.1:8710
 
 It reads and writes `input/` and `outputs/` next to the `h3` binary, so it shares
 directories with your command-line runs. Nothing is copied or duplicated.
+
+`--interactive` keeps h3.c's REPL and reusable-session caches alive between
+renders, so the expensive model load is paid once per studio session. The
+default VS Code F5 profile enables this mode. Use the custom-path profile when
+the binary or model lives elsewhere.
 
 ## What it does
 

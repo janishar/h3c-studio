@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const LEGAL = Array.from({ length: 22 }, (_, n) => 5 + 17 * n);
+const H3_FPS = 24;
 const MAX_PIXELS = 768 * 1344;
 
 const state = {
@@ -148,7 +149,7 @@ function sync() {
   const p = params();
   const n = frames();
   $("frameCount").textContent = n;
-  $("frameSecs").textContent = (n / 24).toFixed(2) + " s";
+  $("frameSecs").textContent = (n / H3_FPS).toFixed(2) + " s";
   $("promptCount").textContent = p.prompt.length + " chars";
   markChips();
 
@@ -351,6 +352,7 @@ async function del(name) {
 /* ── rendering ─────────────────────────────────────────────────── */
 
 async function submit(p) {
+  appendLog("$ " + commandPreview(p));
   const res = await fetch("/api/render", { method: "POST", body: JSON.stringify(p) });
   const data = await res.json();
   if (data.errors) { $("errors").hidden = false; $("errors").textContent = data.errors.join("\n"); }
@@ -404,7 +406,7 @@ function renderQueue(q) {
 }
 
 function appendLog(line) {
-  const el = $("log");
+  const el = $("terminalOutput");
   el.textContent += line + "\n";
   if (el.textContent.length > 60000) el.textContent = el.textContent.slice(-40000);
   el.scrollTop = el.scrollHeight;
@@ -426,6 +428,11 @@ function connect() {
       if (payload.state === "failed" && payload.error) appendLog("!! " + payload.error);
     } else if (kind === "line") {
       appendLog(payload.line);
+    } else if (kind === "terminal") {
+      if (payload.line) appendLog(payload.line);
+      if (payload.error) appendLog("!! " + payload.error);
+      $("terminalCommand").disabled = !!payload.running;
+      $("terminalForm").querySelector("button").disabled = !!payload.running;
     } else if (kind === "queue") {
       renderQueue(payload);
       if (!payload.some((j) => j.state === "running")) showJob(null);
@@ -471,6 +478,17 @@ function init() {
     $("prompt").focus(); sync();
   };
 
+  $("prompt").addEventListener("paste", (e) => {
+    const text = e.clipboardData?.getData("text/plain");
+    if (text == null) return;
+    e.preventDefault();
+    const input = e.currentTarget;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    input.setRangeText(text, start, end, "end");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
   $("file").onchange = (e) => upload(e.target.files);
   const drop = $("drop");
   ["dragenter", "dragover"].forEach((ev) =>
@@ -496,8 +514,24 @@ function init() {
   document.querySelector(".tabs").onclick = (e) => {
     if (!e.target.dataset.tab) return;
     [...e.currentTarget.children].forEach((b) => b.classList.toggle("on", b === e.target));
-    $("log").hidden = e.target.dataset.tab !== "log";
+    $("terminalOutput").hidden = e.target.dataset.tab !== "log";
     $("profile").hidden = e.target.dataset.tab !== "profile";
+  };
+
+  $("terminalForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const input = $("terminalCommand");
+    const command = input.value.trim();
+    if (!command) return;
+    appendLog("$ " + command);
+    input.value = "";
+    const res = await fetch("/api/terminal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command }),
+    });
+    const data = await res.json();
+    if (data.error) appendLog("!! " + data.error);
   };
 
   document.addEventListener("keydown", (e) => {
@@ -508,8 +542,28 @@ function init() {
 
   fetch("/api/config").then((r) => r.json()).then((c) => {
     state.cfg = c;
-    $("paths").textContent = `${c.model}  ·  input/  ·  outputs/`;
+    $("modelPath").textContent = c.model;
+    $("inputPath").textContent = c.inputs;
+    $("outputPath").textContent = c.outputs;
     sync();
+  });
+
+  $("pathButtons").onclick = (e) => {
+    const button = e.target.closest("[data-path]");
+    if (!button) return;
+    $("pathPanel").hidden = false;
+    [...$("pathButtons").children].forEach((b) => b.classList.toggle("on", b === button));
+  };
+
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("#pathButtons") || e.target.closest("#pathPanel")) return;
+    $("pathPanel").hidden = true;
+    [...$("pathButtons").children].forEach((b) => b.classList.remove("on"));
+  });
+
+  document.addEventListener("click", (e) => {
+    const command = document.querySelector("details.cmd");
+    if (command?.open && !e.target.closest("details.cmd")) command.open = false;
   });
 
   connect();

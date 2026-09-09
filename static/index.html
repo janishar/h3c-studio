@@ -10,7 +10,16 @@
 
 <header class="bar">
   <div class="mark">h3 <span>studio</span></div>
-  <div class="paths" id="paths"></div>
+  <div class="pathbuttons" id="pathButtons">
+    <button class="pathbutton" data-path="model">Model</button>
+    <button class="pathbutton" data-path="inputs">Input</button>
+    <button class="pathbutton" data-path="outputs">Output</button>
+  </div>
+  <div class="pathpanel" id="pathPanel" hidden>
+    <div><b>Model</b><code id="modelPath"></code></div>
+    <div><b>Input</b><code id="inputPath"></code></div>
+    <div><b>Output</b><code id="outputPath"></code></div>
+  </div>
   <div class="lamp" id="lamp"><i></i><span id="lampText">idle</span></div>
 </header>
 
@@ -80,9 +89,10 @@
     </div>
 
     <div class="block">
-      <h2>Duration</h2>
+      <div class="blockhead"><h2>Duration</h2><span class="fpsbadge">24 FPS</span></div>
       <input type="range" id="frames" min="0" max="21" value="1">
       <div class="readout"><b id="frameCount">22</b> frames<span id="frameSecs">0.92 s</span></div>
+      <p class="hint">H3 converts requests to its legal frame grid: 5 + 17n.</p>
     </div>
 
     <div class="block">
@@ -137,10 +147,15 @@
 
     <div class="console">
       <div class="conhead">
-        <h2>Log</h2>
+        <h2>Terminal</h2>
         <div class="tabs"><button class="on" data-tab="log">Output</button><button data-tab="profile">Timing</button></div>
       </div>
-      <pre id="log"></pre>
+      <pre id="terminalOutput"></pre>
+      <form class="terminalform" id="terminalForm">
+        <span class="terminalprompt">$</span>
+        <input id="terminalCommand" type="text" autocomplete="off" spellcheck="false" placeholder="Run a command in the h3 work directory">
+        <button class="ghost sm" type="submit">Run</button>
+      </form>
       <table id="profile" hidden><tbody></tbody></table>
     </div>
 

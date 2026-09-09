@@ -3,16 +3,21 @@
   "configurations": [
     {
       "name": "h3 studio (interactive)",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/h3studio.py",
       "console": "integratedTerminal",
       "justMyCode": true,
       "args": [
         "--h3",
-        "/Volumes/ALI-T9/AI/minmaxh3/h3.c/h3",
+        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
         "--model",
-        "/Volumes/ALI-T9/AI/minmaxh3/MiniMax-H3"
+        "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
+        "--input",
+        "${workspaceFolder}/input",
+        "--output",
+        "${workspaceFolder}/outputs",
+        "--interactive"
       ],
       "env": {
         "H3_ZERO_COPY_WEIGHTS": "0"
@@ -23,7 +28,7 @@
     },
     {
       "name": "h3 studio (custom paths)",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/h3studio.py",
       "console": "integratedTerminal",
@@ -32,7 +37,12 @@
         "--h3",
         "${input:h3Path}",
         "--model",
-        "${input:modelPath}"
+        "${input:modelPath}",
+        "--input",
+        "${input:inputPath}",
+        "--output",
+        "${input:outputPath}",
+        "--interactive"
       ],
       "env": {
         "H3_ZERO_COPY_WEIGHTS": "0"
@@ -47,13 +57,25 @@
       "id": "h3Path",
       "type": "promptString",
       "description": "Full path to h3 binary",
-      "default": "/Volumes/ALI-T9/AI/minmaxh3/h3.c/h3"
+      "default": "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3"
     },
     {
       "id": "modelPath",
       "type": "promptString",
       "description": "Full path to MiniMax-H3 model directory",
-      "default": "/Volumes/ALI-T9/AI/minmaxh3/MiniMax-H3"
+      "default": "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
+    },
+    {
+      "id": "inputPath",
+      "type": "promptString",
+      "description": "Full path to input directory",
+      "default": "${workspaceFolder}/input"
+    },
+    {
+      "id": "outputPath",
+      "type": "promptString",
+      "description": "Full path to output directory",
+      "default": "${workspaceFolder}/outputs"
     }
   ]
 }

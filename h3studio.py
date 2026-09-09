@@ -39,8 +39,10 @@ class Config:
         self.h3 = Path(args.h3).resolve()
         self.model = Path(args.model).resolve()
         self.workdir = self.h3.parent
-        self.inputs = (self.workdir / "input").resolve()
-        self.outputs = (self.workdir / "outputs").resolve()
+        # Use provided paths or default to workdir
+        self.inputs = Path(args.input).resolve() if args.input else (self.workdir / "input").resolve()
+        self.outputs = Path(args.output).resolve() if args.output else (self.workdir / "outputs").resolve()
+        self.interactive = args.interactive
         self.inputs.mkdir(parents=True, exist_ok=True)
         self.outputs.mkdir(parents=True, exist_ok=True)
         self.ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
@@ -93,6 +95,12 @@ class Runner:
         self.order = []
         self.current = None
         self.proc = None
+        self.interactive = CFG.interactive
+        self.interactive_proc = None
+        self.interactive_lines = queue.Queue()
+        self.interactive_lock = threading.Lock()
+        self.terminal_proc = None
+        self.terminal_lock = threading.Lock()
         self.lock = threading.Lock()
         self.listeners = []
         threading.Thread(target=self._loop, daemon=True).start()
@@ -148,6 +156,31 @@ class Runner:
             return True
         return False
 
+    def run_terminal(self, command):
+        with self.terminal_lock:
+            if self.terminal_proc is not None or self.current is not None:
+                return False
+            thread = threading.Thread(target=self._run_terminal, args=(command,), daemon=True)
+            thread.start()
+            return True
+
+    def _run_terminal(self, command):
+        self.emit("terminal", {"running": True})
+        try:
+            self.terminal_proc = subprocess.Popen(
+                command, shell=True, executable="/bin/sh", cwd=str(CFG.workdir),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+            )
+            for raw in iter(self.terminal_proc.stdout.readline, b""):
+                line = raw.decode("utf-8", "replace").rstrip()
+                if line:
+                    self.emit("terminal", {"line": line, "running": True})
+            code = self.terminal_proc.wait()
+            self.emit("terminal", {"line": f"[exit {code}]", "running": False})
+        finally:
+            with self.terminal_lock:
+                self.terminal_proc = None
+
     def queue_state(self):
         return [self.jobs[i].summary() for i in self.order
                 if self.jobs[i].state in ("queued", "running")]
@@ -180,6 +213,8 @@ class Runner:
                 self.emit("outputs", list_outputs())
 
     def _run(self, job):
+        if self.interactive:
+            return self._run_interactive(job)
         p = job.params
         stem = safe_stem(p.get("label") or "take")
         name = f"{stem}-{datetime.now().strftime('%m%d-%H%M%S')}.mp4"
@@ -249,6 +284,119 @@ class Runner:
             job.state = "failed"
             job.error = f"h3 exited with code {code}"
 
+    def _ensure_interactive(self, p):
+        if self.interactive_proc is not None:
+            return
+        cmd = [str(CFG.h3), "--profile", "-d", str(CFG.model),
+               "--width", str(p["width"]), "--height", str(p["height"])]
+        env = dict(os.environ)
+        for key, value in (p.get("env") or {}).items():
+            if value not in (None, ""):
+                env[str(key)] = str(value)
+        self.interactive_proc = subprocess.Popen(
+            cmd, cwd=str(CFG.workdir), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0, env=env,
+        )
+        threading.Thread(target=self._read_interactive, daemon=True).start()
+        self._interactive_send(f"!output {CFG.outputs}")
+
+    def _read_interactive(self):
+        buf = b""
+        while self.interactive_proc and self.interactive_proc.stdout:
+            chunk = self.interactive_proc.stdout.read(1)
+            if not chunk:
+                break
+            if chunk in (b"\n", b"\r"):
+                line = buf.decode("utf-8", "replace").rstrip()
+                buf = b""
+                if line:
+                    self.interactive_lines.put(line)
+                    self.emit("terminal", {"line": line, "running": True})
+            else:
+                buf += chunk
+        self.interactive_lines.put(None)
+
+    def stop_interactive(self):
+        proc = self.interactive_proc
+        if proc is None:
+            return
+        self.interactive_proc = None
+        try:
+            if proc.stdin:
+                proc.stdin.write(b"!quit\n")
+                proc.stdin.flush()
+            proc.wait(timeout=5)
+        except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+            proc.kill()
+            proc.wait()
+
+    def _interactive_send(self, line):
+        self.interactive_proc.stdin.write((line + "\n").encode())
+        self.interactive_proc.stdin.flush()
+        self.emit("terminal", {"line": "h3> " + line, "running": True})
+
+    def _run_interactive(self, job):
+        p = job.params
+        if p.get("ref_videos") or p.get("ref_audio"):
+            job.state = "failed"
+            job.error = "interactive h3 mode currently supports image references only"
+            return
+        job.state = "running"
+        job.started = time.time()
+        self._ensure_interactive(p)
+        commands = [
+            f"!size {p['width']}x{p['height']}",
+            f"!frames {p['frames']}",
+            f"!steps {p['steps']}",
+            f"!layers {p['layers']}",
+            f"!reuse {p.get('reuse', 1)}",
+            f"!seed {p['seed']}",
+        ]
+        if p.get("render_width") and p.get("render_height"):
+            commands.append(f"!render-size {p['render_width']}x{p['render_height']}")
+        else:
+            commands.append("!render-size native")
+        commands.extend([
+            f"!token-reduction {'on' if p.get('token_reduction') else 'off'}",
+            f"!ssd-streaming {'on' if p.get('ssd_streaming') else 'off'}",
+            f"!int8-row-fc2 {'on' if p.get('int8_row_fc2') else 'off'}",
+            "!refs clear",
+            "!first clear",
+            "!last clear",
+        ])
+        commands.extend(f"!ref-image {CFG.inputs / n}" for n in p.get("ref_images", []))
+        commands.extend(f"!ref-audio {CFG.inputs / n}" for n in p.get("ref_audio", []))
+        if p.get("first_frame"):
+            commands.append(f"!first {CFG.inputs / p['first_frame']}")
+        if p.get("last_frame"):
+            commands.append(f"!last {CFG.inputs / p['last_frame']}")
+        self.emit("job", job.summary())
+        for command in commands:
+            self._interactive_send(command)
+        self._interactive_send(p["prompt"])
+        job.command = commands + [p["prompt"]]
+        output = None
+        deadline = time.time() + 3600
+        while time.time() < deadline:
+            line = self.interactive_lines.get()
+            if line is None:
+                break
+            match = re.search(r"Done -> (.+?) \[", line)
+            if match:
+                output = Path(match.group(1).strip())
+                break
+            if line.startswith("h3: "):
+                job.error = line
+                break
+        job.finished = time.time()
+        if output and output.exists():
+            job.state = "done"
+            job.output = output.name
+            write_sidecar(output, job)
+        else:
+            job.state = "failed"
+            job.error = job.error or "interactive h3 did not produce an output"
+
     def _pump(self, job, proc):
         """Read h3 output. It rewrites counters with \\r, so split on both."""
         buf = b""
@@ -280,7 +428,7 @@ class Runner:
                             "wall": float(pm.group(3)),
                         })
                 self.emit("job", job.summary())
-                self.emit("line", {"id": job.id, "line": line})
+                self.emit("terminal", {"line": line, "running": True})
             else:
                 buf += chunk
 
@@ -452,6 +600,7 @@ class Handler(BaseHTTPRequestHandler):
                 "workdir": str(CFG.workdir),
                 "inputs": str(CFG.inputs),
                 "outputs": str(CFG.outputs),
+                "interactive": CFG.interactive,
                 "legal_frames": LEGAL_FRAMES,
                 "max_pixels": MAX_PIXELS,
             })
@@ -476,6 +625,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         p = unquote(u.path)
+
+        if p == "/api/terminal":
+            raw = self._body()
+            try:
+                data = json.loads(raw or b"{}")
+            except json.JSONDecodeError:
+                return self._json({"error": "bad json"}, 400)
+            command = str(data.get("command", "")).strip()
+            if not command:
+                return self._json({"error": "command is required"}, 400)
+            if not RUNNER.run_terminal(command):
+                return self._json({"error": "terminal is already running a command"}, 409)
+            return self._json({"started": True})
 
         if p == "/api/upload":
             return self._upload()
@@ -565,6 +727,10 @@ def main():
     ap = argparse.ArgumentParser(description="Local web UI for h3.c")
     ap.add_argument("--h3", required=True, help="path to the h3 binary")
     ap.add_argument("--model", required=True, help="path to the MiniMax-H3 directory")
+    ap.add_argument("--input", default=None, help="path to input directory (default: h3 workdir/input)")
+    ap.add_argument("--output", default=None, help="path to output directory (default: h3 workdir/outputs)")
+    ap.add_argument("--interactive", action="store_true",
+                    help="keep h3.c in interactive mode between renders")
     ap.add_argument("--port", type=int, default=8710)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
@@ -587,6 +753,9 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")
+    finally:
+        RUNNER.stop_interactive()
+        srv.server_close()
 
 
 if __name__ == "__main__":
