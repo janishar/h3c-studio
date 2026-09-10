@@ -1,9 +1,89 @@
 # h3 studio
 
-A local web control surface for [antirez/h3.c](https://github.com/antirez/h3.c).
-Go stdlib only — no third-party dependencies.
+A local web control surface for [h3.c](https://github.com/janishar/h3.c) — native
+MiniMax-H3 video/audio inference on Apple Silicon. h3 studio is a Go stdlib-only
+web server (no third-party JS build step, no third-party Go dependency besides
+`fsnotify`) that drives the `h3` binary: it builds the CLI arguments, runs
+one-shot or interactive sessions, manages references and anchors, queues
+renders, and shows profiling output.
 
-## Build
+## Requirements
+
+### Hardware and OS
+
+- **Apple Silicon Mac.** h3.c uses native Metal, MetalPerformanceShaders,
+  MetalPerformanceShadersGraph, and Accelerate — it does not run on Intel or
+  on non-Apple GPUs. M3-class and M5-class chips are the tested targets; M5
+  additionally gets native Metal 4/TensorOps fast paths (int8 MLP, quantized
+  attention) that M3 falls back from automatically.
+- **macOS** recent enough for the Metal 4/TensorOps frameworks (macOS 26.x was
+  used for development). Command Line Tools (`clang`) are sufficient to build
+  h3.c — a full Xcode install is not required.
+- **Unified memory:** 128 GB is the assumed/validated machine size (prefetch
+  and residency defaults in h3.c target it). Lower-memory Macs can still run
+  smaller canvases and `--ssd-streaming`, but should expect to tune the model
+  flags described in `h3c/README.md`.
+- **Disk:** the full MiniMax-H3 checkpoint (both pipelines) is about **196 GB**
+  — `FL2VA` (~62 GB) for prompt/first-last-frame generation and `Ref2VA`
+  (~134 GB) for reference-conditioned generation. Fast local storage (internal
+  NVMe) is recommended; see "Notes for an external drive" below if the
+  checkpoint lives on external storage.
+
+### Toolchain
+
+- **Go 1.27+** to build h3 studio itself (`go.mod` pins `go 1.27`).
+- **Command Line Tools / clang** to build the `h3` binary (h3.c's `Makefile`
+  links `Foundation`, `Metal`, `MetalPerformanceShaders`,
+  `MetalPerformanceShadersGraph`, and `Accelerate`).
+- **FFmpeg and FFprobe on `PATH`** — required by h3.c for decoding reference
+  media and encoding MP4 output (`H3_FFMPEG` / `H3_FFPROBE` env vars can point
+  at explicit executables instead). Install with `brew install ffmpeg`.
+- **git** with submodule support — this repo vendors h3.c as the `h3c`
+  submodule.
+
+### Model
+
+h3 studio does not download or convert the model itself; point it at a local
+MiniMax-H3 checkpoint directory prepared for h3.c. The published weights are
+[`MiniMaxAI/MiniMax-H3`](https://huggingface.co/MiniMaxAI/MiniMax-H3) on
+Hugging Face, and are laid out as an `FL2VA/` and a `Ref2VA/` pipeline
+directory (each with `text_encoder/`, `tokenizer/`, `processor/`,
+`transformer/`, `video_vae/`, `audio_vae/`, and a `model_index.json`).
+
+## Installation
+
+### 1. Clone with the h3.c submodule
+
+```bash
+git clone --recurse-submodules https://github.com/janishar/h3c-studio.git
+cd h3c-studio
+# if already cloned without --recurse-submodules:
+git submodule update --init --recursive
+```
+
+### 2. Build the h3 binary (h3.c)
+
+```bash
+cd h3c
+make -j8
+cd ..
+```
+
+This produces `h3c/h3`. See [h3c/README.md](h3c/README.md) for the full CLI
+reference, sampler/preset tuning, and the environment variables used for
+performance diagnosis.
+
+### 3. Download the model
+
+```bash
+hf download MiniMaxAI/MiniMax-H3 --local-dir /path/to/MiniMax-H3
+```
+
+Budget ~196 GB of free disk space. You can substitute any Hugging Face
+download method (`hf` CLI, `git lfs clone`, etc.) as long as the resulting
+directory keeps the `FL2VA/` and `Ref2VA/` layout above.
+
+### 4. Build h3 studio
 
 ```bash
 GOCACHE=$(pwd)/.gocache go build -o ./dist/h3studio .
@@ -13,8 +93,8 @@ GOCACHE=$(pwd)/.gocache go build -o ./dist/h3studio .
 
 ```bash
 ./dist/h3studio \
-  --h3 /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
-  --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3 \
+  --h3 ./h3c/h3 \
+  --model /path/to/MiniMax-H3 \
   --host 127.0.0.1 \
   --port 8710 \
   --dev
@@ -30,8 +110,8 @@ Hot reload is **enabled** - static files (CSS/JS) auto-reload on changes.
 
 ```bash
 ./dist/h3studio \
-  --h3 /Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3 \
-  --model /Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3 \
+  --h3 ./h3c/h3 \
+  --model /path/to/MiniMax-H3 \
   --host 0.0.0.0 \
   --port 8710
 ```
@@ -53,7 +133,7 @@ model.
 
 ## What it does
 
-**Reference ordering is explicit.** References are numbered `Picture 1`, `Picture 2``
+**Reference ordering is explicit.** References are numbered `Picture 1`, `Picture 2`
 in list order, and you drag to reorder. Since filenames mean nothing to the model
 and position is what it reads, getting this wrong silently produces the wrong shot.
 
