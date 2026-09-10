@@ -421,6 +421,7 @@ function commandPreview(p) {
 
 function sync() {
   const p = params();
+  p.mode = state.mode;
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(() => {
     fetch("/api/session/save", {
@@ -708,6 +709,14 @@ async function useFrame(o) {
     else state.last = data.name;
     renderAnchors();
     appendLog(`Added ${data.name} to anchors as ${state.first === data.name ? "first" : "last"} frame.`);
+    
+    // Also add to library so it persists
+    state.inputs.push({
+      name: data.name,
+      kind: "image",
+      duration: null
+    });
+    renderLibrary();
   } else {
     // Check limits
     const imageCount = state.refs.filter((ref) => ref.kind === "image").length;
@@ -722,7 +731,15 @@ async function useFrame(o) {
       kind: "image",
     });
     
+    // Add the extracted frame to inputs so it persists and shows in library
+    state.inputs.push({
+      name: data.name,
+      kind: "image",
+      duration: null
+    });
+    
     renderRefs();
+    renderLibrary();
     appendLog(`Added ${data.name} to references as Picture ${imageCount + 1}.`);
   }
   
@@ -1162,6 +1179,7 @@ function init() {
     $("int8RowFc2").checked = !!p.int8_row_fc2;
     $("ssdStreaming").checked = !!p.ssd_streaming;
     $("runMode").value = p.run_mode || "oneshot";
+    setMode(p.mode || "ref");
     $("prefetchDepth").value = p.env?.H3_QWEN_PREFETCH_DEPTH || "";
     $("prefetchWorkers").value = p.env?.H3_QWEN_PREFETCH || "";
     state.refs = (p.refs || [
