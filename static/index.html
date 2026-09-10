@@ -6,6 +6,15 @@
 <title>h3 studio</title>
 <link rel="stylesheet" href="/static/style.css">
 <script>
+// Apply the saved theme before first paint to avoid a flash of the wrong theme.
+(function() {
+  try {
+    const saved = localStorage.getItem("h3studio-theme");
+    if (saved === "light" || saved === "dark") document.documentElement.dataset.theme = saved;
+  } catch (e) {}
+})();
+</script>
+<script>
 // Auto-reload on file changes
 (function() {
   const reloadInterval = 30000; // Check every 30 seconds
@@ -59,6 +68,11 @@
     <div><b>Model</b><code id="modelPath"></code></div>
     <button class="ghost sm" id="changeH3" type="button">Choose h3 path</button>
     <button class="ghost sm" id="changeModel" type="button">Choose model path</button>
+  </div>
+  <div class="modeswitch themeswitch" id="themeSwitch" role="radiogroup" aria-label="Theme">
+    <button data-theme="system" class="on" type="button" title="Match system">🖥</button>
+    <button data-theme="light" type="button" title="Light">☀</button>
+    <button data-theme="dark" type="button" title="Dark">🌙</button>
   </div>
   <div class="lamp" id="lamp"><i></i><span id="lampText">idle</span></div>
 </header>

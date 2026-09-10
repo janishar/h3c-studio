@@ -5,6 +5,30 @@ const LEGAL = Array.from({ length: 22 }, (_, n) => 5 + 17 * n);
 const H3_FPS = 24;
 const MAX_PIXELS = 768 * 1344;
 
+/* ── theme (system / light / dark) ────────────────────────────────── */
+
+const THEME_KEY = "h3studio-theme";
+
+function applyTheme(mode) {
+  if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+  else delete document.documentElement.dataset.theme;
+  [...($("themeSwitch")?.children || [])].forEach((b) => b.classList.toggle("on", b.dataset.theme === mode));
+}
+
+function initTheme() {
+  let saved = "system";
+  try { saved = localStorage.getItem(THEME_KEY) || "system"; } catch (e) {}
+  applyTheme(saved);
+  $("themeSwitch")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-theme]");
+    if (!btn) return;
+    const mode = btn.dataset.theme;
+    applyTheme(mode);
+    try { localStorage.setItem(THEME_KEY, mode); } catch (err) {}
+  });
+}
+initTheme();
+
 // Auto-reload functionality
 (function() {
   let lastModified = 0;
