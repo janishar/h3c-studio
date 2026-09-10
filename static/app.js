@@ -5,6 +5,46 @@ const LEGAL = Array.from({ length: 22 }, (_, n) => 5 + 17 * n);
 const H3_FPS = 24;
 const MAX_PIXELS = 768 * 1344;
 
+// Auto-reload functionality
+(function() {
+  let lastModified = 0;
+  let reloadInterval = null;
+
+  function checkReload() {
+    fetch('/static/style.css')
+      .then(res => {
+        if (!res.ok) return null;
+        const lastModified = res.headers.get('Last-Modified');
+        if (lastModified) {
+          const newModified = new Date(lastModified).getTime();
+          if (newModified > lastModified) {
+            console.log('Stylesheet changed - reloading...');
+            location.reload();
+          }
+        }
+        return res.text();
+      })
+      .catch(err => console.log('Reload check failed:', err));
+  }
+
+  // Check every 30 seconds
+  reloadInterval = setInterval(checkReload, 30000);
+
+  // Reload on tab visibility change
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      checkReload();
+    }
+  });
+
+  // Reload on page visibility
+  document.addEventListener('pagehide', () => {
+    if (reloadInterval) {
+      clearInterval(reloadInterval);
+    }
+  });
+})();
+
 const state = {
   mode: "ref",
   refs: [],            // {name, kind}
@@ -804,6 +844,9 @@ function connect() {
       if (payload[0] && !state.selected) select(payload[0].name);
     } else if (kind === "inputs") {
       state.inputs = payload; renderLibrary();
+    } else if (kind === "reload") {
+      console.log('[Hot Reload] Reloading...');
+      location.reload();
     }
   };
   es.onerror = () => setTimeout(() => { es.close(); connect(); }, 3000);

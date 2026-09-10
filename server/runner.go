@@ -105,6 +105,38 @@ type Runner struct {
 
 	terminalLock sync.Mutex
 	terminalProc *exec.Cmd
+
+	reloadMu      sync.Mutex
+	reloadClients map[chan string]bool
+}
+
+func (r *Runner) ReloadClients() {
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+	for client := range r.reloadClients {
+		select {
+		case client <- "reload":
+		default:
+		}
+	}
+}
+
+func (r *Runner) SubscribeReload() chan string {
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+	if r.reloadClients == nil {
+		r.reloadClients = make(map[chan string]bool)
+	}
+	q := make(chan string, 10)
+	r.reloadClients[q] = true
+	return q
+}
+
+func (r *Runner) UnsubscribeReload(q chan string) {
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+	delete(r.reloadClients, q)
+	close(q)
 }
 
 func NewRunner(cfg *Config) *Runner {

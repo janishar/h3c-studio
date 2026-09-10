@@ -293,3 +293,4 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
   .setup, .takes { border: 0; border-bottom: 1px solid var(--line); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+// Test hot reload

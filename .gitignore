@@ -4,3 +4,4 @@ sessions/**
 /.gocache/
 /.gomodcache/
 __debug*
+go.sum
