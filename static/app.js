@@ -1317,22 +1317,54 @@ function init() {
 
   // Terminal resize functionality
   const resizeHandle = $("resizeHandle");
+  const resizeBtn = $("resizeBtn");
   const consoleContainer = $("consoleContainer");
+  const stageContainer = document.querySelector(".stage");
   let isResizing = false;
   let startY = 0;
   let startHeight = 0;
 
-  resizeHandle.addEventListener("mousedown", (e) => {
+  console.log("Resize handle found:", !!resizeHandle);
+  console.log("Resize button found:", !!resizeBtn);
+  console.log("Console container found:", !!consoleContainer);
+
+  // Button drag to resize terminal
+  resizeBtn.addEventListener("mousedown", (e) => {
+    console.log("Resize button drag started");
     isResizing = true;
     startY = e.clientY;
     startHeight = consoleContainer.offsetHeight;
     document.body.style.cursor = "ns-resize";
     document.body.style.userSelect = "none";
+    resizeBtn.classList.add("resizing");
+    e.preventDefault();
+  });
+
+  // Button click to toggle terminal size
+  resizeBtn.addEventListener("click", (e) => {
+    if (isResizing) {
+      e.preventDefault();
+      return;
+    }
+    const currentHeight = consoleContainer.offsetHeight;
+    const newHeight = currentHeight > 250 ? 150 : 300;
+    consoleContainer.style.height = `${newHeight}px`;
+  });
+
+  resizeHandle.addEventListener("mousedown", (e) => {
+    console.log("Resize started");
+    isResizing = true;
+    startY = e.clientY;
+    startHeight = consoleContainer.offsetHeight;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    resizeHandle.classList.add("resizing");
     e.preventDefault();
   });
 
   document.addEventListener("mousemove", (e) => {
     if (!isResizing) return;
+    console.log("Resizing:", e.clientY, "delta:", startY - e.clientY);
 
     const deltaY = startY - e.clientY;
     const newHeight = Math.max(150, Math.min(startHeight + deltaY, 500));
@@ -1341,22 +1373,27 @@ function init() {
 
   document.addEventListener("mouseup", () => {
     if (isResizing) {
+      console.log("Resize ended");
       isResizing = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      resizeHandle.classList.remove("resizing");
     }
   });
 
   // Touch support for mobile
   resizeHandle.addEventListener("touchstart", (e) => {
+    console.log("Touch resize started");
     isResizing = true;
     startY = e.touches[0].clientY;
     startHeight = consoleContainer.offsetHeight;
+    resizeHandle.classList.add("resizing");
     e.preventDefault();
   });
 
   document.addEventListener("touchmove", (e) => {
     if (!isResizing) return;
+    console.log("Touch resizing:", e.touches[0].clientY, "delta:", startY - e.touches[0].clientY);
 
     const deltaY = startY - e.touches[0].clientY;
     const newHeight = Math.max(150, Math.min(startHeight + deltaY, 500));
@@ -1364,7 +1401,11 @@ function init() {
   });
 
   document.addEventListener("touchend", () => {
-    isResizing = false;
+    if (isResizing) {
+      console.log("Touch resize ended");
+      isResizing = false;
+      resizeHandle.classList.remove("resizing");
+    }
   });
 
   connect();

@@ -222,12 +222,18 @@
       <button class="ghost sm" id="cancel">Stop</button>
     </div>
 
+    <div class="queue" id="queueWrap" hidden>
+      <h2>Queued</h2>
+      <ul id="queue"></ul>
+    </div>
+
     <div class="console" id="consoleContainer">
       <div class="conhead">
         <h2>Terminal</h2>
         <div class="tabs"><button class="on" data-tab="log">Output</button><button data-tab="profile">Timing</button></div>
+        <button class="ghost sm resize-btn" id="resizeBtn" title="Resize terminal">↕</button>
       </div>
-      <div class="resize-handle" id="resizeHandle"></div>
+      <div class="resize-handle" id="resizeHandle" title="Drag to resize terminal"></div>
       <pre id="terminalOutput"></pre>
       <form class="terminalform" id="terminalForm">
         <span class="terminalprompt">$</span>
@@ -241,11 +247,6 @@
         <button class="ghost sm" type="submit">Send</button>
       </form>
       <table id="profile" hidden><tbody></tbody></table>
-    </div>
-
-    <div class="queue" id="queueWrap" hidden>
-      <h2>Queued</h2>
-      <ul id="queue"></ul>
     </div>
   </section>
 
