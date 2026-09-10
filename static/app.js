@@ -553,7 +553,7 @@ function renderLibrary() {
     delBtn.type = "button";
     delBtn.title = "Delete input";
     delBtn.textContent = "×";
-    delBtn.onclick = (e) => { e.stopPropagation(); deleteFile(f.name, "input"); };
+    delBtn.onclick = (e) => { e.stopPropagation(); deleteRef(f.name, f.kind); };
     fig.append(delBtn);
     fig.onclick = () => addRef(f);
     wrap.append(fig);
@@ -583,6 +583,24 @@ async function deleteFile(name, kind) {
     $("player").classList.remove("on");
     $("viewerEmpty").hidden = false;
   }
+  renderLibrary(); renderRefs(); renderPromptEditor(); renderAnchors(); renderTakes(); sync();
+}
+
+async function deleteRef(name, kind) {
+  const message = `Delete this ${kind} reference?\n${name}\n\nThis will also delete the file from the directory.`;
+  if (!confirm(message)) return;
+  const res = await fetch("/api/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, kind }),
+  });
+  const data = await res.json();
+  if (data.error) { appendLog("!! " + data.error); return; }
+  state.inputs = data.inputs || [];
+  state.outputs = data.outputs || [];
+  state.refs = state.refs.filter((ref) => !(kind === "input" && ref.name === name));
+  if (state.first === name) state.first = null;
+  if (state.last === name) state.last = null;
   renderLibrary(); renderRefs(); renderPromptEditor(); renderAnchors(); renderTakes(); sync();
 }
 
@@ -623,6 +641,92 @@ function renderAnchors() {
   $("anchorFirst").classList.toggle("set", !!state.first);
   $("anchorLast").querySelector("em").textContent = state.last || "none";
   $("anchorLast").classList.toggle("set", !!state.last);
+}
+
+function useRef(o) {
+  const p = o.meta?.params;
+  if (!p) return;
+  
+  // Check if video already exists in refs
+  const existingVideo = state.refs.find((ref) => ref.kind === "video" && ref.name === o.name);
+  if (existingVideo) {
+    appendLog(`!! ${o.name} is already in references.`);
+    return;
+  }
+  
+  // Check limits
+  const videoCount = state.refs.filter((ref) => ref.kind === "video").length;
+  if (videoCount >= 3) {
+    appendLog("!! Maximum 3 video references allowed.");
+    return;
+  }
+  
+  // Get duration from metadata or estimate
+  const duration = p.duration_s || null;
+  
+  if (state.mode === "anchor") {
+    appendLog("!! Cannot add video to anchors. Switch to Reference mode.");
+    return;
+  }
+  
+  state.refs.push({
+    id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    name: o.name,
+    kind: "video",
+    mode: "keep",
+    pairedAudio: null,
+    duration: duration,
+  });
+  
+  renderRefs();
+  sync();
+  appendLog(`Added ${o.name} to references as Video ${videoCount + 1}.`);
+}
+
+async function useFrame(o) {
+  appendLog(`Extracting last frame from ${o.name}...`);
+  const res = await fetch("/api/frame", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: o.name }),
+  });
+  const data = await res.json();
+  if (data.error) {
+    appendLog(`!! Failed to extract frame: ${data.error}`);
+    return;
+  }
+  
+  // Check if frame already exists in refs
+  const existingFrame = state.refs.find((ref) => ref.kind === "image" && ref.name === data.name);
+  if (existingFrame) {
+    appendLog(`!! Frame ${data.name} is already in references.`);
+    return;
+  }
+  
+  if (state.mode === "anchor") {
+    if (!state.first) state.first = data.name;
+    else state.last = data.name;
+    renderAnchors();
+    appendLog(`Added ${data.name} to anchors as ${state.first === data.name ? "first" : "last"} frame.`);
+  } else {
+    // Check limits
+    const imageCount = state.refs.filter((ref) => ref.kind === "image").length;
+    if (imageCount >= 9) {
+      appendLog("!! Maximum 9 image references allowed.");
+      return;
+    }
+    
+    state.refs.push({
+      id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+      name: data.name,
+      kind: "image",
+    });
+    
+    renderRefs();
+    appendLog(`Added ${data.name} to references as Picture ${imageCount + 1}.`);
+  }
+  
+  sync();
 }
 
 /* ── uploads ───────────────────────────────────────────────────── */
@@ -679,9 +783,38 @@ function renderTakes() {
     ops.className = "ops";
     ops.append(
       mkBtn("Reuse settings", () => restore(o)),
-      mkBtn("Chain →", () => chain(o.name)),
-      mkBtn("Delete", () => deleteFile(o.name, "output")),
+      mkBtn("Use ref", () => useRef(o)),
+      mkBtn("Use Frame", () => useFrame(o)),
     );
+    const menuBtn = document.createElement("button");
+    menuBtn.className = "ghost";
+    menuBtn.textContent = "⋮";
+    menuBtn.title = "More options";
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const existingMenu = li.querySelector(".take-menu");
+      if (existingMenu) {
+        existingMenu.remove();
+        return;
+      }
+      const menu = document.createElement("div");
+      menu.className = "take-menu";
+      menu.innerHTML = `
+        <button type="button" class="menu-item" data-action="chain">Chain →</button>
+        <button type="button" class="menu-item" data-action="delete">Delete</button>
+      `;
+      menu.onclick = (e) => {
+        if (e.target.classList.contains("menu-item")) {
+          const action = e.target.dataset.action;
+          if (action === "chain") chain(o.name);
+          else if (action === "delete") deleteFile(o.name, "output");
+          menu.remove();
+        }
+      };
+      menu.onmouseleave = () => menu.remove();
+      li.append(menu);
+    };
+    ops.append(menuBtn);
     li.append(ops);
     li.onclick = (e) => { if (e.target.tagName !== "BUTTON") select(o.name); };
     ul.append(li);

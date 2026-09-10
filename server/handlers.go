@@ -246,49 +246,50 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		a.json(w, map[string]any{"name": name, "inputs": listInputs(a.cfg)})
-	case "/api/delete":
-		name := filepath.Base(anyToString(data["name"]))
-		kind := firstString(anyToString(data["kind"]), "output")
-		if kind != "input" && kind != "output" {
-			a.jsonCode(w, map[string]any{"error": "invalid delete kind"}, http.StatusBadRequest)
+	case "/api/frame":
+		name, err := extractLastFrame(a.cfg, anyToString(data["name"]))
+		if err != nil {
+			switch t := err.(type) {
+			case commandError:
+				msg := t.Stderr
+				if len(msg) > 400 {
+					msg = msg[:400]
+				}
+				a.jsonCode(w, map[string]any{"error": msg}, http.StatusInternalServerError)
+			default:
+				a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			}
 			return
 		}
-		root := a.cfg.CurrentOutputs()
-		if kind == "input" {
-			root = a.cfg.CurrentInputs()
+		a.json(w, map[string]any{"name": name, "inputs": listInputs(a.cfg)})
+	case "/api/delete":
+		name := anyToString(data["name"])
+		kind := anyToString(data["kind"])
+		if name == "" || kind == "" {
+			a.jsonCode(w, map[string]any{"error": "name and kind are required"}, http.StatusBadRequest)
+			return
 		}
-		target := filepath.Join(root, name)
-		files := []string{target}
-		if kind == "output" {
-			files = append(files, strings.TrimSuffix(target, filepath.Ext(target))+".json")
+		var filePath string
+		switch kind {
+		case "image", "video", "audio":
+			filePath = filepath.Join(a.cfg.CurrentInputs(), name)
+		case "output":
+			filePath = filepath.Join(a.cfg.CurrentOutputs(), name)
+		default:
+			a.jsonCode(w, map[string]any{"error": "invalid kind, must be 'image', 'video', 'audio', or 'output'"}, http.StatusBadRequest)
+			return
 		}
-		for _, file := range files {
-			if FileExists(file) {
-				_ = os.Remove(file)
-			}
+		if !FileExists(filePath) {
+			a.jsonCode(w, map[string]any{"error": "file not found"}, http.StatusNotFound)
+			return
 		}
-		if kind == "output" {
-			path := a.cfg.SessionSetting(a.cfg.CurrentSession())
-			settings := readJSONObject(path)
-			if takes, ok := settings["takes"].([]any); ok {
-				filtered := make([]any, 0, len(takes))
-				for _, raw := range takes {
-					take, ok := raw.(map[string]any)
-					if ok && anyToString(take["output"]) == name {
-						continue
-					}
-					filtered = append(filtered, raw)
-				}
-				settings["takes"] = filtered
-				_ = WriteJSONFile(path, settings, true)
-			}
+		if err := os.Remove(filePath); err != nil {
+			a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusInternalServerError)
+			return
 		}
-		if kind == "input" {
-			a.runner.Emit("inputs", listInputs(a.cfg))
-		} else {
-			a.runner.Emit("outputs", listOutputs(a.cfg))
-		}
-		a.json(w, map[string]any{"inputs": listInputs(a.cfg), "outputs": listOutputs(a.cfg)})
+		inputs := listInputs(a.cfg)
+		outputs := listOutputs(a.cfg)
+		a.json(w, map[string]any{"inputs": inputs, "outputs": outputs})
 	default:
 		a.send(w, http.StatusNotFound, []byte(`{"error":"not found"}`), "application/json", nil)
 	}

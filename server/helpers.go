@@ -246,8 +246,9 @@ func extractLastFrame(cfg *Config, videoName string) (string, error) {
 	if !FileExists(src) {
 		return "", os.ErrNotExist
 	}
-	dst := filepath.Join(cfg.CurrentInputs(), strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))+"-lastframe.png")
-	cmd := exec.Command(cfg.FFmpeg, "-y", "-sseof", "-0.2", "-i", src, "-vsync", "0", "-update", "1", "-q:v", "2", dst)
+	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+	dst := filepath.Join(cfg.CurrentInputs(), base+"-lastframe.png")
+	cmd := exec.Command(cfg.FFmpeg, "-y", "-i", src, "-ss", "-0.2", "-vframes", "1", "-q:v", "2", "-update", "1", dst)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", commandError{Err: err, Stderr: string(out)}

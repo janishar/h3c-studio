@@ -285,7 +285,7 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 
 .count { font: 400 11px var(--mono); color: var(--ink-3); }
 .takelist { list-style: none; margin: 0; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
-.takelist li { padding: 9px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; }
+.takelist li { padding: 9px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; position: relative; }
 .takelist li:hover { border-color: var(--line-hi); }
 .takelist li.on { border-color: var(--amber); }
 .takelist .row { display: flex; gap: 8px; align-items: flex-start; }
@@ -296,6 +296,10 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .takelist .meta { margin-top: 4px; font: 400 10px var(--mono); color: var(--ink-3); }
 .takelist .ops { display: flex; gap: 4px; margin-top: 8px; }
 .takelist .ops button { padding: 2px 7px; font-size: 10px; }
+.takelist .take-menu { position: absolute; right: 10px; top: 10px; background: var(--raised-2); border: 1px solid var(--line-hi); border-radius: var(--r); padding: 4px; display: flex; flex-direction: column; gap: 2px; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,.3); }
+.takelist .take-menu .menu-item { width: 100%; padding: 5px 10px; text-align: left; font-size: 11px; background: transparent; border: none; color: var(--ink-2); cursor: pointer; border-radius: 3px; }
+.takelist .take-menu .menu-item:hover { background: var(--amber); color: #000; }
+.takelist .take-menu .menu-item:active { background: var(--line-hi); }
 
 @media (max-width: 1100px) {
   .grid { grid-template-columns: 1fr; height: auto; }

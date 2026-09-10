@@ -24,7 +24,7 @@
       "command": "./dist/h3studio",
       "args": [
         "--h3",
-        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "${workspaceFolder}/h3c/h3",
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
       ],
