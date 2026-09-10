@@ -1,0 +1,3 @@
+[submodule "h3c"]
+	path = h3c
+	url = https://github.com/janishar/h3.c.git

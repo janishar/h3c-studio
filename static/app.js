@@ -5,6 +5,30 @@ const LEGAL = Array.from({ length: 22 }, (_, n) => 5 + 17 * n);
 const H3_FPS = 24;
 const MAX_PIXELS = 768 * 1344;
 
+/* ── theme (system / light / dark) ────────────────────────────────── */
+
+const THEME_KEY = "h3studio-theme";
+
+function applyTheme(mode) {
+  if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+  else delete document.documentElement.dataset.theme;
+  [...($("themeSwitch")?.children || [])].forEach((b) => b.classList.toggle("on", b.dataset.theme === mode));
+}
+
+function initTheme() {
+  let saved = "system";
+  try { saved = localStorage.getItem(THEME_KEY) || "system"; } catch (e) {}
+  applyTheme(saved);
+  $("themeSwitch")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-theme]");
+    if (!btn) return;
+    const mode = btn.dataset.theme;
+    applyTheme(mode);
+    try { localStorage.setItem(THEME_KEY, mode); } catch (err) {}
+  });
+}
+initTheme();
+
 // Auto-reload functionality
 (function() {
   let lastModified = 0;
@@ -59,6 +83,11 @@ const state = {
   saveTimer: null,
   promptDoc: [{ type: "text", value: "" }],
   mention: null,
+  timelineList: [],       // rendered combined videos for the current session
+  selectedTimelineName: null,
+  timelineSeq: [],        // {path, name, duration} clips picked for the sequence being built
+  timelineBrowse: null,   // last /api/timeline/browse response
+  timelineBrowsePath: "",
 };
 
 const SIZES = [
@@ -421,6 +450,7 @@ function commandPreview(p) {
 
 function sync() {
   const p = params();
+  p.mode = state.mode;
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(() => {
     fetch("/api/session/save", {
@@ -553,7 +583,7 @@ function renderLibrary() {
     delBtn.type = "button";
     delBtn.title = "Delete input";
     delBtn.textContent = "×";
-    delBtn.onclick = (e) => { e.stopPropagation(); deleteFile(f.name, "input"); };
+    delBtn.onclick = (e) => { e.stopPropagation(); deleteRef(f.name, f.kind); };
     fig.append(delBtn);
     fig.onclick = () => addRef(f);
     wrap.append(fig);
@@ -574,7 +604,8 @@ async function deleteFile(name, kind) {
   if (data.error) { appendLog("!! " + data.error); return; }
   state.inputs = data.inputs || [];
   state.outputs = data.outputs || [];
-  state.refs = state.refs.filter((ref) => !(kind === "input" && ref.name === name));
+  if (data.timeline) state.timelineList = data.timeline;
+  state.refs = state.refs.filter((ref) => !(["image", "video", "audio"].includes(kind) && ref.name === name));
   if (state.first === name) state.first = null;
   if (state.last === name) state.last = null;
   if (kind === "output" && state.selected === name) {
@@ -583,6 +614,30 @@ async function deleteFile(name, kind) {
     $("player").classList.remove("on");
     $("viewerEmpty").hidden = false;
   }
+  if (kind === "timeline" && state.selectedTimelineName === name) {
+    state.selectedTimelineName = null;
+    $("player").removeAttribute("src");
+    $("player").classList.remove("on");
+    $("viewerEmpty").hidden = false;
+  }
+  renderLibrary(); renderRefs(); renderPromptEditor(); renderAnchors(); renderTakes(); renderTimelineList(); sync();
+}
+
+async function deleteRef(name, kind) {
+  const message = `Delete this ${kind} reference?\n${name}\n\nThis will also delete the file from the directory.`;
+  if (!confirm(message)) return;
+  const res = await fetch("/api/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, kind }),
+  });
+  const data = await res.json();
+  if (data.error) { appendLog("!! " + data.error); return; }
+  state.inputs = data.inputs || [];
+  state.outputs = data.outputs || [];
+  state.refs = state.refs.filter((ref) => !(["image", "video", "audio"].includes(kind) && ref.name === name));
+  if (state.first === name) state.first = null;
+  if (state.last === name) state.last = null;
   renderLibrary(); renderRefs(); renderPromptEditor(); renderAnchors(); renderTakes(); sync();
 }
 
@@ -623,6 +678,108 @@ function renderAnchors() {
   $("anchorFirst").classList.toggle("set", !!state.first);
   $("anchorLast").querySelector("em").textContent = state.last || "none";
   $("anchorLast").classList.toggle("set", !!state.last);
+}
+
+function useRef(o) {
+  const p = o.meta?.params;
+  if (!p) return;
+  
+  // Check if video already exists in refs
+  const existingVideo = state.refs.find((ref) => ref.kind === "video" && ref.name === o.name);
+  if (existingVideo) {
+    appendLog(`!! ${o.name} is already in references.`);
+    return;
+  }
+  
+  // Check limits
+  const videoCount = state.refs.filter((ref) => ref.kind === "video").length;
+  if (videoCount >= 3) {
+    appendLog("!! Maximum 3 video references allowed.");
+    return;
+  }
+  
+  // Get duration from metadata or estimate
+  const duration = p.duration_s || null;
+  
+  if (state.mode === "anchor") {
+    appendLog("!! Cannot add video to anchors. Switch to Reference mode.");
+    return;
+  }
+  
+  state.refs.push({
+    id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    name: o.name,
+    kind: "video",
+    mode: "keep",
+    pairedAudio: null,
+    duration: duration,
+  });
+  
+  renderRefs();
+  sync();
+  appendLog(`Added ${o.name} to references as Video ${videoCount + 1}.`);
+}
+
+async function useFrame(o) {
+  appendLog(`Extracting last frame from ${o.name}...`);
+  const res = await fetch("/api/frame", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: o.name }),
+  });
+  const data = await res.json();
+  if (data.error) {
+    appendLog(`!! Failed to extract frame: ${data.error}`);
+    return;
+  }
+  
+  // Check if frame already exists in refs
+  const existingFrame = state.refs.find((ref) => ref.kind === "image" && ref.name === data.name);
+  if (existingFrame) {
+    appendLog(`!! Frame ${data.name} is already in references.`);
+    return;
+  }
+  
+  if (state.mode === "anchor") {
+    if (!state.first) state.first = data.name;
+    else state.last = data.name;
+    renderAnchors();
+    appendLog(`Added ${data.name} to anchors as ${state.first === data.name ? "first" : "last"} frame.`);
+    
+    // Also add to library so it persists
+    state.inputs.push({
+      name: data.name,
+      kind: "image",
+      duration: null
+    });
+    renderLibrary();
+  } else {
+    // Check limits
+    const imageCount = state.refs.filter((ref) => ref.kind === "image").length;
+    if (imageCount >= 9) {
+      appendLog("!! Maximum 9 image references allowed.");
+      return;
+    }
+    
+    state.refs.push({
+      id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+      name: data.name,
+      kind: "image",
+    });
+    
+    // Add the extracted frame to inputs so it persists and shows in library
+    state.inputs.push({
+      name: data.name,
+      kind: "image",
+      duration: null
+    });
+    
+    renderRefs();
+    renderLibrary();
+    appendLog(`Added ${data.name} to references as Picture ${imageCount + 1}.`);
+  }
+  
+  sync();
 }
 
 /* ── uploads ───────────────────────────────────────────────────── */
@@ -679,9 +836,38 @@ function renderTakes() {
     ops.className = "ops";
     ops.append(
       mkBtn("Reuse settings", () => restore(o)),
-      mkBtn("Chain →", () => chain(o.name)),
-      mkBtn("Delete", () => deleteFile(o.name, "output")),
+      mkBtn("Use ref", () => useRef(o)),
+      mkBtn("Use Frame", () => useFrame(o)),
     );
+    const menuBtn = document.createElement("button");
+    menuBtn.className = "ghost";
+    menuBtn.textContent = "⋮";
+    menuBtn.title = "More options";
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      const existingMenu = li.querySelector(".take-menu");
+      if (existingMenu) {
+        existingMenu.remove();
+        return;
+      }
+      const menu = document.createElement("div");
+      menu.className = "take-menu";
+      menu.innerHTML = `
+        <button type="button" class="menu-item" data-action="chain">Chain →</button>
+        <button type="button" class="menu-item" data-action="delete">Delete</button>
+      `;
+      menu.onclick = (e) => {
+        if (e.target.classList.contains("menu-item")) {
+          const action = e.target.dataset.action;
+          if (action === "chain") chain(o.name);
+          else if (action === "delete") deleteFile(o.name, "output");
+          menu.remove();
+        }
+      };
+      menu.onmouseleave = () => menu.remove();
+      li.append(menu);
+    };
+    ops.append(menuBtn);
     li.append(ops);
     li.onclick = (e) => { if (e.target.tagName !== "BUTTON") select(o.name); };
     ul.append(li);
@@ -697,6 +883,7 @@ function mkBtn(label, fn) {
 
 function select(name) {
   state.selected = name;
+  state.selectedTimelineName = null;
   const v = $("player");
   v.pause();
   v.muted = false;
@@ -707,6 +894,69 @@ function select(name) {
   $("viewerEmpty").hidden = true;
   v.play().catch((error) => appendLog("!! Playback did not start automatically: " + error.message));
   renderTakes();
+  renderTimelineList();
+}
+
+/* ── timeline (combined clips) ────────────────────────────────────── */
+
+function renderTimelineList() {
+  const ul = $("timelineList");
+  if (!ul) return;
+  ul.innerHTML = "";
+  $("timelineCount").textContent = state.timelineList.length;
+  if (state.timelineList.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "timelist-empty";
+    empty.textContent = "No combined videos yet. Use the Timeline button above to build one.";
+    ul.append(empty);
+    return;
+  }
+  state.timelineList.forEach((o) => {
+    const li = document.createElement("li");
+    li.classList.toggle("on", state.selectedTimelineName === o.name);
+    const secs = o.meta?.clips?.length;
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    const video = document.createElement("video");
+    video.src = `/media/timeline/${encodeURIComponent(o.name)}`;
+    video.muted = true;
+    video.preload = "metadata";
+    video.playsInline = true;
+    video.setAttribute("aria-hidden", "true");
+    thumb.append(video);
+    const info = document.createElement("div");
+    info.className = "info";
+    info.innerHTML = `<div class="nm">${o.name}</div>
+      <div class="meta">${secs ? secs + " clips" : "combined"}</div>`;
+    row.append(thumb, info);
+    li.append(row);
+
+    const ops = document.createElement("div");
+    ops.className = "ops";
+    ops.append(mkBtn("Delete", () => deleteFile(o.name, "timeline")));
+    li.append(ops);
+    li.onclick = (e) => { if (e.target.tagName !== "BUTTON") selectTimeline(o.name); };
+    ul.append(li);
+  });
+}
+
+function selectTimeline(name) {
+  state.selectedTimelineName = name;
+  state.selected = null;
+  const v = $("player");
+  v.pause();
+  v.muted = false;
+  v.volume = 1;
+  v.src = `/media/timeline/${encodeURIComponent(name)}`;
+  v.load();
+  v.classList.add("on");
+  $("viewerEmpty").hidden = true;
+  v.play().catch((error) => appendLog("!! Playback did not start automatically: " + error.message));
+  renderTakes();
+  renderTimelineList();
 }
 
 function restore(o) {
@@ -817,7 +1067,8 @@ function connect() {
     const { kind, payload } = JSON.parse(e.data);
     if (kind === "hello") {
       state.inputs = payload.inputs; state.outputs = payload.outputs;
-      renderLibrary(); renderTakes(); renderQueue(payload.queue);
+      state.timelineList = payload.timeline || [];
+      renderLibrary(); renderTakes(); renderTimelineList(); renderQueue(payload.queue);
       $("terminalOutput").textContent = "";
       if (payload.terminal_log) $("terminalOutput").textContent = payload.terminal_log;
       else [...(payload.history || []).reverse(), ...(payload.queue || [])].forEach((job) => {
@@ -844,6 +1095,8 @@ function connect() {
       if (payload[0] && !state.selected) select(payload[0].name);
     } else if (kind === "inputs") {
       state.inputs = payload; renderLibrary();
+    } else if (kind === "timeline") {
+      state.timelineList = payload; renderTimelineList();
     } else if (kind === "reload") {
       console.log('[Hot Reload] Reloading...');
       location.reload();
@@ -1008,8 +1261,10 @@ function init() {
     if (!res.ok) {
       state.inputs = [];
       state.outputs = [];
+      state.timelineList = [];
       renderLibrary();
       renderTakes();
+      renderTimelineList();
       // Clear terminal output when session doesn't exist (new session)
       $("terminalOutput").textContent = "";
       return;
@@ -1029,6 +1284,7 @@ function init() {
     $("int8RowFc2").checked = !!p.int8_row_fc2;
     $("ssdStreaming").checked = !!p.ssd_streaming;
     $("runMode").value = p.run_mode || "oneshot";
+    setMode(p.mode || "ref");
     $("prefetchDepth").value = p.env?.H3_QWEN_PREFETCH_DEPTH || "";
     $("prefetchWorkers").value = p.env?.H3_QWEN_PREFETCH || "";
     state.refs = (p.refs || [
@@ -1051,6 +1307,10 @@ function init() {
     fetch("/api/outputs").then((r) => r.json()).then((items) => {
       state.outputs = items;
       renderTakes();
+    });
+    fetch("/api/timeline").then((r) => r.json()).then((items) => {
+      state.timelineList = items;
+      renderTimelineList();
     });
     sync();
   }
@@ -1107,6 +1367,12 @@ function init() {
     const audio = tokens.audio?.[0] || "the ambience";
     state.promptDoc = [{ type: "text", value:
       `Scene: ${subject} stands in ...\nAction: ...\nCamera: ...\nLook: ...\nAudio: match the ambience of ${audio}` }];
+    renderPromptEditor(); $("prompt").focus(); sync();
+  };
+  $("clearPrompt").onclick = () => {
+    if (!promptText(state.promptDoc).trim()) return;
+    if (!confirm("Clear the prompt?")) return;
+    state.promptDoc = [{ type: "text", value: "" }];
     renderPromptEditor(); $("prompt").focus(); sync();
   };
 
@@ -1251,6 +1517,9 @@ function init() {
     $("modelPathInput").value = state.cfg.model;
     $("h3PathInput").value = state.cfg.h3;
   };
+  $("timelineButton").onclick = () => {
+    openTimelineModal();
+  };
   $("changeH3").onclick = () => {
     $("pathPanel").hidden = true;
     $("h3Error").hidden = true;
@@ -1309,6 +1578,246 @@ function init() {
     if (e.key === "Enter") $("saveModel").click();
     if (e.key === "Escape") $("cancelModel").click();
   };
+
+  // Timeline modal functionality — combine multiple clips into one video.
+  function openTimelineModal() {
+    state.timelineSeq = [];
+    renderSequence();
+    $("timelineOutputName").value = "";
+    $("timelineRenderStatus").textContent = "";
+    if (state.timelineList[0]) showReview(state.timelineList[0].name);
+    else clearReview();
+    $("timelineModal").hidden = false;
+    browseTo("");
+  }
+
+  function showReview(name) {
+    const v = $("timelineReviewVideo");
+    v.src = `/media/timeline/${encodeURIComponent(name)}`;
+    v.muted = false;
+    v.load();
+    v.classList.add("on");
+    $("timelineReviewEmpty").hidden = true;
+  }
+
+  function clearReview() {
+    const v = $("timelineReviewVideo");
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+    v.classList.remove("on");
+    $("timelineReviewEmpty").hidden = false;
+  }
+
+  function closeTimelineModal() {
+    $("timelineModal").hidden = true;
+    $("timelineReviewVideo").pause();
+  }
+
+  async function browseTo(path) {
+    state.timelineBrowsePath = path || "";
+    const res = await fetch(`/api/timeline/browse?path=${encodeURIComponent(path || "")}`);
+    const data = await res.json();
+    if (data.error) {
+      appendLog("!! " + data.error);
+      return;
+    }
+    state.timelineBrowse = data;
+    renderBreadcrumb(data);
+    renderBrowserList(data);
+  }
+
+  function renderBreadcrumb(data) {
+    const el = $("timelineBreadcrumb");
+    el.innerHTML = "";
+    const rootBtn = document.createElement("button");
+    rootBtn.type = "button";
+    rootBtn.textContent = "sessions";
+    rootBtn.onclick = () => browseTo(".");
+    el.append(rootBtn);
+    const parts = data.path && data.path !== "." ? data.path.split("/").filter(Boolean) : [];
+    let acc = "";
+    parts.forEach((part) => {
+      acc = acc ? `${acc}/${part}` : part;
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = "/";
+      el.append(sep);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = part;
+      const target = acc;
+      btn.onclick = () => browseTo(target);
+      el.append(btn);
+    });
+  }
+
+  function renderBrowserList(data) {
+    const list = $("timelineBrowserList");
+    list.innerHTML = "";
+    if (data.parent !== null && data.parent !== undefined) {
+      const up = document.createElement("div");
+      up.className = "browse-dir";
+      up.innerHTML = `<div class="icon">⬅</div><div class="nm">..</div>`;
+      up.onclick = () => browseTo(data.parent);
+      list.append(up);
+    }
+    (data.dirs || []).forEach((d) => {
+      const div = document.createElement("div");
+      div.className = "browse-dir";
+      div.innerHTML = `<div class="icon">📁</div><div class="nm">${d.name}</div>`;
+      div.onclick = () => browseTo(d.path);
+      list.append(div);
+    });
+    (data.files || []).forEach((f) => {
+      const div = document.createElement("div");
+      div.className = "browse-file";
+      const count = state.timelineSeq.filter((c) => c.path === f.path).length;
+      div.innerHTML = `
+        <div class="thumb"><video src="/media/session/${f.path.split("/").map(encodeURIComponent).join("/")}" muted preload="metadata"></video></div>
+        <div class="nm">${f.name}</div>
+        <div class="meta">${f.duration ? f.duration.toFixed(2) + "s" : ""}</div>
+        ${count ? `<div class="pickcount">${count}</div>` : ""}
+      `;
+      div.classList.toggle("selected", count > 0);
+      div.onclick = () => addClipToSequence(f);
+      list.append(div);
+    });
+    if (!data.dirs?.length && !data.files?.length) {
+      const empty = document.createElement("div");
+      empty.className = "browser-empty";
+      empty.textContent = "No videos in this directory.";
+      list.append(empty);
+    }
+  }
+
+  function addClipToSequence(f) {
+    state.timelineSeq.push({ path: f.path, name: f.name, duration: f.duration });
+    renderSequence();
+    renderBrowserList(state.timelineBrowse);
+  }
+
+  function removeClipFromSequence(index) {
+    state.timelineSeq.splice(index, 1);
+    renderSequence();
+    if (state.timelineBrowse) renderBrowserList(state.timelineBrowse);
+  }
+
+  function clearSequence() {
+    state.timelineSeq = [];
+    renderSequence();
+    if (state.timelineBrowse) renderBrowserList(state.timelineBrowse);
+  }
+
+  let dragFromIndex = null;
+
+  function reorderSequence(from, to) {
+    if (from === to || from == null || to == null) return;
+    const [moved] = state.timelineSeq.splice(from, 1);
+    state.timelineSeq.splice(to, 0, moved);
+    renderSequence();
+  }
+
+  function renderSequence() {
+    const track = $("timelineTrack");
+    track.innerHTML = "";
+    $("timelinePlaceholder").hidden = state.timelineSeq.length > 0;
+    state.timelineSeq.forEach((item, index) => {
+      const div = document.createElement("div");
+      div.className = "timeline-item";
+      div.draggable = true;
+      div.dataset.index = index;
+      div.innerHTML = `
+        <div class="drag-handle">⠿</div>
+        <div class="seq">${index + 1}</div>
+        <video src="/media/session/${item.path.split("/").map(encodeURIComponent).join("/")}" muted preload="metadata"></video>
+        <div class="info">
+          <div class="nm">${item.name}</div>
+          <div class="meta">${item.duration ? item.duration.toFixed(2) + "s" : ""}</div>
+        </div>
+        <button class="remove" type="button" data-index="${index}">✕</button>
+      `;
+      div.addEventListener("dragstart", (e) => {
+        dragFromIndex = index;
+        div.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", String(index));
+      });
+      div.addEventListener("dragend", () => {
+        div.classList.remove("dragging");
+        dragFromIndex = null;
+        [...track.children].forEach((c) => c.classList.remove("drag-over"));
+      });
+      div.addEventListener("dragover", (e) => {
+        if (dragFromIndex === null) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        div.classList.add("drag-over");
+      });
+      div.addEventListener("dragleave", () => div.classList.remove("drag-over"));
+      div.addEventListener("drop", (e) => {
+        e.preventDefault();
+        div.classList.remove("drag-over");
+        if (dragFromIndex === null) return;
+        reorderSequence(dragFromIndex, index);
+      });
+      track.appendChild(div);
+    });
+    const slot = document.createElement("div");
+    slot.className = "timeline-add-slot";
+    slot.textContent = state.timelineSeq.length ? "+ pick another clip on the left" : "+ pick a clip on the left to start";
+    track.appendChild(slot);
+    $("renderTimeline").disabled = state.timelineSeq.length === 0;
+  }
+
+  async function combineVideos() {
+    if (state.timelineSeq.length === 0) {
+      appendLog("!! Pick at least one clip to combine.");
+      return;
+    }
+    const name = $("timelineOutputName").value.trim();
+    $("renderTimeline").disabled = true;
+    $("timelineRenderStatus").textContent = `Combining ${state.timelineSeq.length} clip${state.timelineSeq.length > 1 ? "s" : ""}…`;
+    appendLog(`$ combine ${state.timelineSeq.map((c) => c.path).join(" + ")}`);
+    try {
+      const res = await fetch("/api/timeline/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clips: state.timelineSeq.map((c) => c.path), name }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        appendLog("!! " + data.error);
+        $("timelineRenderStatus").textContent = "Failed — see terminal log.";
+        return;
+      }
+      appendLog(`Combined video saved as ${data.name}`);
+      $("timelineRenderStatus").textContent = `Saved ${data.name}`;
+      state.timelineList = data.timeline || [];
+      renderTimelineList();
+      showReview(data.name);
+      $("timelineReviewVideo").play().catch(() => {});
+      state.timelineSeq = [];
+      renderSequence();
+      if (state.timelineBrowse) renderBrowserList(state.timelineBrowse);
+    } finally {
+      $("renderTimeline").disabled = state.timelineSeq.length === 0;
+    }
+  }
+
+  // Timeline event listeners
+  $("closeTimeline").onclick = closeTimelineModal;
+  $("clearTimeline").onclick = clearSequence;
+  $("renderTimeline").onclick = combineVideos;
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("timelineModal").hidden) closeTimelineModal();
+  });
+
+  $("timelineTrack").addEventListener("click", (e) => {
+    if (e.target.classList.contains("remove")) {
+      removeClipFromSequence(parseInt(e.target.dataset.index, 10));
+    }
+  });
 
   document.addEventListener("click", (e) => {
     if (e.target.closest("#pathButtons") || e.target.closest("#pathPanel")) return;
