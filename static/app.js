@@ -987,6 +987,8 @@ function init() {
       $("sessionSelect").value = state.cfg.session;
       return;
     }
+    // Clear terminal output when switching sessions
+    $("terminalOutput").textContent = "";
     const active = await fetch("/api/session/activate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1008,6 +1010,8 @@ function init() {
       state.outputs = [];
       renderLibrary();
       renderTakes();
+      // Clear terminal output when session doesn't exist (new session)
+      $("terminalOutput").textContent = "";
       return;
     }
     const p = await res.json();
@@ -1083,6 +1087,8 @@ function init() {
       $("sessionError").hidden = false;
       return;
     }
+    // Clear terminal output when creating a new session
+    $("terminalOutput").textContent = "";
     window.location.reload();
   };
   $("newSessionName").onkeydown = (e) => {

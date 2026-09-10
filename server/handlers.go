@@ -355,7 +355,7 @@ func (a *App) events(w http.ResponseWriter, r *http.Request) {
 	headers.Set("Cache-Control", "no-cache")
 	headers.Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	logData, _ := os.ReadFile(a.cfg.TerminalLog(""))
+	logData, _ := os.ReadFile(a.cfg.TerminalLog(a.cfg.CurrentSession()))
 	hello, _ := json.Marshal(map[string]any{
 		"kind": "hello",
 		"payload": map[string]any{

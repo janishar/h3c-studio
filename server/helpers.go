@@ -401,9 +401,9 @@ func anyToString(v any) string {
 	switch t := v.(type) {
 	case string:
 		return t
-	case fmt.Stringer:
-		return t.String()
 	case json.Number:
+		return t.String()
+	case fmt.Stringer:
 		return t.String()
 	case float64:
 		if math.Trunc(t) == t {

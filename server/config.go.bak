@@ -194,9 +194,24 @@ func (c *Config) ActivateSession(name string) (string, string, error) {
 			}
 		}
 	}
-	// Create empty terminal log for the new session
-	terminalLogPath := c.TerminalLog(session)
-	if err := ensureFile(terminalLogPath); err != nil {
+	if err := ensureFile(c.TerminalLog(session)); err != nil {
+		return "", "", err
+	}
+	return inputs, outputs, nil
+}
+	c.inputs = inputs
+	c.outputs = outputs
+	c.mu.Unlock()
+	if err := WriteJSONFile(c.SettingFile, map[string]any{"last_session": session}, true); err != nil {
+		return "", "", err
+	}
+	setting := c.SessionSetting(session)
+	if !FileExists(setting) {
+		if err := WriteJSONFile(setting, defaultSessionSettings(session), true); err != nil {
+			return "", "", err
+		}
+	}
+	if err := ensureFile(c.TerminalLog(session)); err != nil {
 		return "", "", err
 	}
 	return inputs, outputs, nil
@@ -224,6 +239,9 @@ func (c *Config) SessionDirs(name string) (string, string, error) {
 		return "", "", err
 	}
 	if err := os.MkdirAll(outputs, 0o755); err != nil {
+		return "", "", err
+	}
+	if err := ensureFile(c.TerminalLog(session)); err != nil {
 		return "", "", err
 	}
 	return inputs, outputs, nil
