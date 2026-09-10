@@ -159,10 +159,10 @@ func (c *Config) loadLastSession() string {
 }
 
 func (c *Config) ActivateSession(name string) (string, string, error) {
-	session := safeStem(name)
-	if session == "" {
-		session = "session-1"
+	if stringsTrimSpace(name) == "" {
+		name = "session-1"
 	}
+	session := safeStem(name)
 	root := filepath.Join(c.Sessions, session)
 	inputs := filepath.Join(root, "inputs")
 	outputs := filepath.Join(root, "outputs")
@@ -209,20 +209,20 @@ func (c *Config) ActivateSession(name string) (string, string, error) {
 }
 
 func (c *Config) SessionSetting(name string) string {
-	session := safeStem(name)
-	if session == "" {
-		session = "session-1"
+	if stringsTrimSpace(name) == "" {
+		name = "session-1"
 	}
+	session := safeStem(name)
 	root := filepath.Join(c.Sessions, session)
 	_ = os.MkdirAll(root, 0o755)
 	return filepath.Join(root, "setting.json")
 }
 
 func (c *Config) SessionDirs(name string) (string, string, error) {
-	session := safeStem(name)
-	if session == "" {
-		session = "default"
+	if stringsTrimSpace(name) == "" {
+		name = "default"
 	}
+	session := safeStem(name)
 	root := filepath.Join(c.Sessions, session)
 	inputs := filepath.Join(root, "inputs")
 	outputs := filepath.Join(root, "outputs")
@@ -239,13 +239,13 @@ func (c *Config) TerminalLog(name string) string {
 	c.mu.RLock()
 	active := c.activeSession
 	c.mu.RUnlock()
+	if stringsTrimSpace(name) == "" {
+		name = active
+	}
+	if stringsTrimSpace(name) == "" {
+		name = "session-1"
+	}
 	session := safeStem(name)
-	if session == "" {
-		session = active
-	}
-	if session == "" {
-		session = "session-1"
-	}
 	path := filepath.Join(c.Sessions, session, "terminal.log")
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	return path
