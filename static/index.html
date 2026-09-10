@@ -60,7 +60,7 @@
     <button class="ghost sm" id="newSession" type="button">New session</button>
   </label>
   <div class="pathbuttons" id="pathButtons">
-    <button class="pathbutton" id="timelineButton" type="button">Timeline</button>
+    <button class="pathbutton" id="timelineButton" type="button">Create Timeline</button>
     <button class="pathbutton" id="modelButton" type="button">Model</button>
   </div>
   <div class="pathpanel" id="pathPanel" hidden>
@@ -113,13 +113,16 @@
     </div>
 
     <div class="block">
-      <h2>Prompt</h2>
+      <div class="blockhead">
+        <h2>Prompt</h2>
+        <span class="count" id="promptCount"></span>
+      </div>
       <div id="prompt" class="prompt-editor" contenteditable="true" role="textbox"
            aria-multiline="true" data-placeholder="Scene: …&#10;Action: …&#10;Camera: …&#10;Look: …&#10;Audio: …"></div>
       <div id="mentionMenu" class="mention-menu" hidden></div>
-      <div class="row">
+      <div class="prompt-actions">
         <button class="ghost sm" id="scaffold">Insert structure</button>
-        <span class="hint" id="promptCount"></span>
+        <button class="ghost sm" id="clearPrompt" title="Clear the prompt">Clear</button>
       </div>
     </div>
 

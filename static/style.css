@@ -143,9 +143,11 @@ details.block > *:not(summary) { margin-top: 12px; }
 .blockhead.sticky { position: sticky; top: 0; background: var(--pane); padding: 14px 16px; border-bottom: 1px solid var(--line); z-index: 2; margin: 0; }
 .block > h2 { margin-bottom: 11px; }
 .hint { margin: 8px 0 0; font-size: 11px; color: var(--ink-3); line-height: 1.5; }
-.prompt-editor { min-height: 154px; margin-bottom: 12px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); font: 400 12px/1.6 var(--mono); white-space: pre-wrap; outline: none; }
+.prompt-editor { min-height: 154px; max-height: 340px; overflow-y: auto; margin-bottom: 10px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); font: 400 12px/1.7 var(--mono); white-space: pre-wrap; outline: none; transition: border-color .16s, box-shadow .16s; }
 .prompt-editor:empty::before { content: attr(data-placeholder); color: var(--ink-3); white-space: pre-line; pointer-events: none; }
+.prompt-editor:hover { border-color: var(--line-hi); }
 .prompt-editor:focus { border-color: var(--amber); box-shadow: 0 0 0 3px rgba(255,180,84,.12); }
+.prompt-actions { display: flex; align-items: center; gap: 8px; }
 .mention-chip { display: inline-flex; align-items: center; gap: 4px; margin: 0 2px; padding: 1px 5px; border: 1px solid var(--line-hi); border-radius: 999px; background: var(--raised-2); color: var(--ink); font: 400 11px var(--sans); user-select: all; }
 .mention-chip.invalid { border-color: var(--bad); color: var(--bad); }
 .mention-menu { position: fixed; z-index: 6000; min-width: 230px; max-height: 220px; overflow: auto; padding: 4px; background: var(--raised); border: 1px solid var(--line-hi); border-radius: var(--r); box-shadow: 0 8px 22px rgba(0,0,0,.35); }

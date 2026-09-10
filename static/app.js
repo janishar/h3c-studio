@@ -1369,6 +1369,12 @@ function init() {
       `Scene: ${subject} stands in ...\nAction: ...\nCamera: ...\nLook: ...\nAudio: match the ambience of ${audio}` }];
     renderPromptEditor(); $("prompt").focus(); sync();
   };
+  $("clearPrompt").onclick = () => {
+    if (!promptText(state.promptDoc).trim()) return;
+    if (!confirm("Clear the prompt?")) return;
+    state.promptDoc = [{ type: "text", value: "" }];
+    renderPromptEditor(); $("prompt").focus(); sync();
+  };
 
   $("prompt").addEventListener("paste", (e) => {
     const text = e.clipboardData?.getData("text/plain");
