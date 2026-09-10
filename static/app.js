@@ -605,7 +605,7 @@ async function deleteFile(name, kind) {
   state.inputs = data.inputs || [];
   state.outputs = data.outputs || [];
   if (data.timeline) state.timelineList = data.timeline;
-  state.refs = state.refs.filter((ref) => !(kind === "input" && ref.name === name));
+  state.refs = state.refs.filter((ref) => !(["image", "video", "audio"].includes(kind) && ref.name === name));
   if (state.first === name) state.first = null;
   if (state.last === name) state.last = null;
   if (kind === "output" && state.selected === name) {
@@ -635,7 +635,7 @@ async function deleteRef(name, kind) {
   if (data.error) { appendLog("!! " + data.error); return; }
   state.inputs = data.inputs || [];
   state.outputs = data.outputs || [];
-  state.refs = state.refs.filter((ref) => !(kind === "input" && ref.name === name));
+  state.refs = state.refs.filter((ref) => !(["image", "video", "audio"].includes(kind) && ref.name === name));
   if (state.first === name) state.first = null;
   if (state.last === name) state.last = null;
   renderLibrary(); renderRefs(); renderPromptEditor(); renderAnchors(); renderTakes(); sync();

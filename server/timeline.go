@@ -104,38 +104,7 @@ func browseTimeline(cfg *Config, relPath string) (map[string]any, error) {
 }
 
 func listTimeline(cfg *Config) []map[string]any {
-	dir := cfg.CurrentTimeline()
-	matches, _ := filepath.Glob(filepath.Join(dir, "*.mp4"))
-	sort.Slice(matches, func(i, j int) bool {
-		ai, aerr := os.Stat(matches[i])
-		bi, berr := os.Stat(matches[j])
-		if aerr != nil || berr != nil {
-			return matches[i] > matches[j]
-		}
-		return ai.ModTime().After(bi.ModTime())
-	})
-	items := make([]map[string]any, 0, len(matches))
-	for _, path := range matches {
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
-		meta := map[string]any{}
-		side := strings.TrimSuffix(path, filepath.Ext(path)) + ".json"
-		if FileExists(side) {
-			meta = readJSONObject(side)
-			if meta == nil {
-				meta = map[string]any{}
-			}
-		}
-		items = append(items, map[string]any{
-			"name":  filepath.Base(path),
-			"size":  info.Size(),
-			"mtime": float64(info.ModTime().UnixNano()) / 1e9,
-			"meta":  meta,
-		})
-	}
-	return items
+	return listVideoDir(cfg.CurrentTimeline(), 0)
 }
 
 func probeHasAudio(path string) bool {
@@ -224,10 +193,14 @@ func combineTimeline(cfg *Config, name string, clipRelPaths []string) (string, e
 	}
 
 	args := []string{"-y"}
+	for _, c := range clips {
+		args = append(args, "-i", c.abs)
+	}
+	// Silent-audio inputs are appended after all clip inputs, so clip i's
+	// video/audio stays addressable as ffmpeg input index i.
 	silentIndex := map[int]int{} // clip index -> lavfi input index
 	nextInput := len(clips)
 	for i, c := range clips {
-		args = append(args, "-i", c.abs)
 		if !c.hasAudio {
 			dur := c.duration
 			if dur <= 0 {

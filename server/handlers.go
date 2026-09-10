@@ -317,7 +317,7 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 		a.runner.Emit("timeline", timeline)
 		a.json(w, map[string]any{"name": name, "timeline": timeline})
 	case "/api/delete":
-		name := anyToString(data["name"])
+		name := filepath.Base(anyToString(data["name"]))
 		kind := anyToString(data["kind"])
 		if name == "" || kind == "" {
 			a.jsonCode(w, map[string]any{"error": "name and kind are required"}, http.StatusBadRequest)
@@ -347,9 +347,20 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 		if FileExists(side) {
 			_ = os.Remove(side)
 		}
+		if kind == "output" {
+			pruneTake(a.cfg, name)
+		}
 		inputs := listInputs(a.cfg)
 		outputs := listOutputs(a.cfg)
 		timeline := listTimeline(a.cfg)
+		switch kind {
+		case "image", "video", "audio":
+			a.runner.Emit("inputs", inputs)
+		case "output":
+			a.runner.Emit("outputs", outputs)
+		case "timeline":
+			a.runner.Emit("timeline", timeline)
+		}
 		a.json(w, map[string]any{"inputs": inputs, "outputs": outputs, "timeline": timeline})
 	default:
 		a.send(w, http.StatusNotFound, []byte(`{"error":"not found"}`), "application/json", nil)
