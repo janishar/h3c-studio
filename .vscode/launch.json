@@ -14,7 +14,7 @@
       },
       "args": [
         "--h3",
-        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "${workspaceFolder}/h3c/h3",
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
         "--dev"
@@ -52,7 +52,7 @@
       },
       "args": [
         "--h3",
-        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "${workspaceFolder}/h3c/h3",
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
       ]
@@ -70,7 +70,7 @@
       },
       "args": [
         "--h3",
-        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "${workspaceFolder}/h3c/h3",
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
       ]
@@ -88,7 +88,7 @@
       },
       "args": [
         "--h3",
-        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "${workspaceFolder}/h3c/h3",
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
         "--host",
@@ -111,7 +111,7 @@
       },
       "args": [
         "--h3",
-        "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3",
+        "${workspaceFolder}/h3c/h3",
         "--model",
         "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
         "--host",
@@ -127,7 +127,7 @@
       "id": "h3Path",
       "type": "promptString",
       "description": "Full path to h3 binary",
-      "default": "/Users/janisharali/GenAI/minimax-h3-mlx/h3.c/h3"
+      "default": "${workspaceFolder}/h3c/h3"
     },
     {
       "id": "modelPath",

@@ -23,6 +23,7 @@ type Config struct {
 	activeSession string
 	inputs        string
 	outputs       string
+	timeline      string
 }
 
 type Args struct {
@@ -145,7 +146,7 @@ func (c *Config) loadLastSession() string {
 				continue
 			}
 			root := filepath.Join(c.Sessions, entry.Name())
-			if DirExists(filepath.Join(root, "input")) && DirExists(filepath.Join(root, "outputs")) {
+			if DirExists(filepath.Join(root, "inputs")) && DirExists(filepath.Join(root, "outputs")) {
 				existing = append(existing, entry.Name())
 			}
 		}
@@ -163,18 +164,23 @@ func (c *Config) ActivateSession(name string) (string, string, error) {
 		session = "session-1"
 	}
 	root := filepath.Join(c.Sessions, session)
-	inputs := filepath.Join(root, "input")
+	inputs := filepath.Join(root, "inputs")
 	outputs := filepath.Join(root, "outputs")
+	timeline := filepath.Join(root, "timeline")
 	if err := os.MkdirAll(inputs, 0o755); err != nil {
 		return "", "", err
 	}
 	if err := os.MkdirAll(outputs, 0o755); err != nil {
 		return "", "", err
 	}
+	if err := os.MkdirAll(timeline, 0o755); err != nil {
+		return "", "", err
+	}
 	c.mu.Lock()
 	c.activeSession = session
 	c.inputs = inputs
 	c.outputs = outputs
+	c.timeline = timeline
 	c.mu.Unlock()
 	if err := WriteJSONFile(c.SettingFile, map[string]any{"last_session": session}, true); err != nil {
 		return "", "", err
@@ -218,7 +224,7 @@ func (c *Config) SessionDirs(name string) (string, string, error) {
 		session = "default"
 	}
 	root := filepath.Join(c.Sessions, session)
-	inputs := filepath.Join(root, "input")
+	inputs := filepath.Join(root, "inputs")
 	outputs := filepath.Join(root, "outputs")
 	if err := os.MkdirAll(inputs, 0o755); err != nil {
 		return "", "", err
@@ -274,4 +280,10 @@ func (c *Config) CurrentOutputs() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.outputs
+}
+
+func (c *Config) CurrentTimeline() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.timeline
 }

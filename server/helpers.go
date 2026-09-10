@@ -115,6 +115,25 @@ func recordTake(cfg *Config, job *Job) {
 	_ = WriteJSONFile(path, data, true)
 }
 
+func pruneTake(cfg *Config, outputName string) {
+	path := cfg.SessionSetting(cfg.CurrentSession())
+	settings := readJSONObject(path)
+	takes, ok := settings["takes"].([]any)
+	if !ok {
+		return
+	}
+	filtered := make([]any, 0, len(takes))
+	for _, raw := range takes {
+		take, ok := raw.(map[string]any)
+		if ok && anyToString(take["output"]) == outputName {
+			continue
+		}
+		filtered = append(filtered, raw)
+	}
+	settings["takes"] = filtered
+	_ = WriteJSONFile(path, settings, true)
+}
+
 func listSessions(cfg *Config) []map[string]any {
 	entries, err := os.ReadDir(cfg.Sessions)
 	if err != nil {
@@ -205,7 +224,13 @@ func probeDuration(path string) any {
 }
 
 func listOutputs(cfg *Config) []map[string]any {
-	matches, _ := filepath.Glob(filepath.Join(cfg.CurrentOutputs(), "*.mp4"))
+	return listVideoDir(cfg.CurrentOutputs(), 80)
+}
+
+// listVideoDir lists *.mp4 files in dir, newest first, each with its sidecar
+// .json metadata (if any). limit caps the number of entries returned (0 = no cap).
+func listVideoDir(dir string, limit int) []map[string]any {
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.mp4"))
 	sort.Slice(matches, func(i, j int) bool {
 		ai, aerr := os.Stat(matches[i])
 		bi, berr := os.Stat(matches[j])
@@ -234,7 +259,7 @@ func listOutputs(cfg *Config) []map[string]any {
 			"mtime": float64(info.ModTime().UnixNano()) / 1e9,
 			"meta":  meta,
 		})
-		if len(items) == 80 {
+		if limit > 0 && len(items) == limit {
 			break
 		}
 	}
@@ -242,15 +267,35 @@ func listOutputs(cfg *Config) []map[string]any {
 }
 
 func extractLastFrame(cfg *Config, videoName string) (string, error) {
-	src := filepath.Join(cfg.CurrentOutputs(), videoName)
+	src := filepath.Join(cfg.CurrentOutputs(), filepath.Base(videoName))
 	if !FileExists(src) {
 		return "", os.ErrNotExist
 	}
-	dst := filepath.Join(cfg.CurrentInputs(), strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))+"-lastframe.png")
-	cmd := exec.Command(cfg.FFmpeg, "-y", "-sseof", "-0.2", "-i", src, "-vsync", "0", "-update", "1", "-q:v", "2", dst)
-	out, err := cmd.CombinedOutput()
+	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+	dst := filepath.Join(cfg.CurrentInputs(), base+"-lastframe.png")
+
+	// Ensure output directory exists
+	inputsDir := filepath.Dir(dst)
+	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
+		return "", commandError{Err: err, Stderr: "Failed to create output directory"}
+	}
+
+	// Get video duration via ffprobe
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src)
+	durationBytes, err := cmd.Output()
 	if err != nil {
-		return "", commandError{Err: err, Stderr: string(out)}
+		return "", commandError{Err: err, Stderr: "Failed to get video duration"}
+	}
+	duration, err := strconv.ParseFloat(strings.TrimSpace(string(durationBytes)), 64)
+	if err != nil || duration <= 0 {
+		return "", commandError{Err: errors.New("could not determine video duration"), Stderr: string(durationBytes)}
+	}
+
+	// Extract last frame (duration - 0.2 seconds)
+	cmd = exec.Command(cfg.FFmpeg, "-y", "-ss", fmt.Sprintf("%.2f", duration-0.2), "-i", src, "-vframes", "1", "-q:v", "2", "-update", "1", dst)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", commandError{Err: err, Stderr: string(output)}
 	}
 	return filepath.Base(dst), nil
 }
