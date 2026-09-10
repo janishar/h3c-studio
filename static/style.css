@@ -73,7 +73,7 @@ code { font: 400 11px var(--mono); color: var(--ink-2); }
 
 .grid {
   display: grid;
-  grid-template-columns: 495px minmax(0, 1fr) 290px;
+  grid-template-columns: 495px minmax(0, 1fr) 348px;
   height: calc(100% - 58px);
 }
 .pane { overflow-y: auto; min-width: 0; }
@@ -221,7 +221,7 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .reflist li .nm { flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reflist li button { padding: 1px 6px; font-size: 12px; line-height: 1; background: transparent; border-color: transparent; color: var(--ink-3); }
 
-.anchorpair { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.anchorpair { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 10px; }
 .anchor { padding: 9px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); text-align: center; cursor: pointer; }
 .anchor.set { border-color: var(--amber); }
 .anchor span { display: block; font-size: 11px; color: var(--ink-3); }
@@ -370,6 +370,7 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .timeline-queue-head button { padding: 3px 9px; }
 .timeline-preview { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 16px 16px; }
 .timeline-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--ink-3); font-size: 12px; text-align: center; padding: 20px; }
+.timeline-placeholder[hidden] { display: none; }
 .timeline-track { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; overflow-y: auto; }
 .timeline-item { display: flex; align-items: center; gap: 10px; padding: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r); transition: border-color .16s, opacity .16s, transform .16s; cursor: grab; }
 .timeline-item:hover { border-color: var(--line-hi); }
@@ -395,6 +396,7 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .timeline-review-player video { width: 100%; height: 100%; object-fit: contain; display: block; }
 .timeline-review-player video:not(.on) { display: none; }
 .timeline-review-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--ink-3); font-size: 11px; }
+.timeline-review-empty[hidden] { display: none; }
 
 .timeline-actions { display: flex; align-items: flex-end; gap: 8px; }
 .timeline-name { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--ink-2); flex: 1; min-width: 0; }
