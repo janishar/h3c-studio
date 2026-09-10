@@ -51,6 +51,7 @@
     <button class="ghost sm" id="newSession" type="button">New session</button>
   </label>
   <div class="pathbuttons" id="pathButtons">
+    <button class="pathbutton" id="timelineButton" type="button">Timeline</button>
     <button class="pathbutton" id="modelButton" type="button">Model</button>
   </div>
   <div class="pathpanel" id="pathPanel" hidden>
@@ -252,11 +253,20 @@
 
   <!-- ─────────────────────────────── takes ─────────────────────────────── -->
   <section class="pane takes">
-    <div class="blockhead sticky">
-      <h2>Takes</h2>
-      <span class="count" id="takeCount"></span>
+    <div class="takes-half">
+      <div class="blockhead sticky">
+        <h2>Takes</h2>
+        <span class="count" id="takeCount"></span>
+      </div>
+      <ul class="takelist" id="takes"></ul>
     </div>
-    <ul class="takelist" id="takes"></ul>
+    <div class="timeline-half">
+      <div class="blockhead sticky">
+        <h2>Timeline</h2>
+        <span class="count" id="timelineCount"></span>
+      </div>
+      <ul class="timelist" id="timelineList"></ul>
+    </div>
   </section>
 
 </main>
@@ -299,6 +309,57 @@
     <div class="modalactions">
       <button class="ghost" id="cancelModel" type="button">Cancel</button>
       <button class="go" id="saveModel" type="button">Use path</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal fullscreen" id="timelineModal" hidden>
+  <div class="timeline-editor" role="dialog" aria-modal="true" aria-labelledby="timelineModalTitle">
+    <div class="timeline-header">
+      <h2 id="timelineModalTitle">Combine videos</h2>
+      <div class="timeline-headcrumb" id="timelineBreadcrumb"></div>
+      <button class="ghost sm timeline-back" id="closeTimeline" type="button">← Back</button>
+    </div>
+
+    <div class="timeline-editor-body">
+      <div class="timeline-browser">
+        <div class="timeline-dropzone" id="timelineDropzone">
+          <p>Select clips from a session directory below — click to add to the queue</p>
+        </div>
+        <div class="timeline-browser-list" id="timelineBrowserList"></div>
+      </div>
+
+      <div class="timeline-queue">
+        <div class="timeline-queue-head">
+          <h3>Queue</h3>
+          <button class="ghost sm" id="clearTimeline" type="button">Clear</button>
+        </div>
+        <div class="timeline-preview" id="timelinePreview">
+          <div class="timeline-placeholder" id="timelinePlaceholder">
+            <p>No clips yet — pick videos on the left to build the queue</p>
+          </div>
+          <div class="timeline-track" id="timelineTrack">
+            <!-- Timeline items will be added here -->
+          </div>
+        </div>
+      </div>
+
+      <div class="timeline-review">
+        <h3>Combined result</h3>
+        <div class="timeline-review-player" id="timelineReviewPlayer">
+          <video id="timelineReviewVideo" controls playsinline></video>
+          <div class="timeline-review-empty" id="timelineReviewEmpty">
+            <p>Combine the queued clips to review the result here.</p>
+          </div>
+        </div>
+        <div class="timeline-actions">
+          <label class="timeline-name">Output name
+            <input type="text" id="timelineOutputName" placeholder="timeline-01" autocomplete="off">
+          </label>
+          <button class="go sm" id="renderTimeline" type="button">Combine</button>
+        </div>
+        <span class="hint" id="timelineRenderStatus"></span>
+      </div>
     </div>
   </div>
 </div>

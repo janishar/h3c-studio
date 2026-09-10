@@ -101,12 +101,39 @@ func (a *App) handleGet(w http.ResponseWriter, r *http.Request, p string) {
 		a.json(w, map[string]any{"queue": a.runner.QueueState(), "history": a.runner.History(40)})
 		return
 	}
+	if p == "/api/timeline" {
+		a.json(w, listTimeline(a.cfg))
+		return
+	}
+	if p == "/api/timeline/browse" {
+		listing, err := browseTimeline(a.cfg, r.URL.Query().Get("path"))
+		if err != nil {
+			a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			return
+		}
+		a.json(w, listing)
+		return
+	}
 	if strings.HasPrefix(p, "/media/input/") {
 		a.serveFile(w, r, filepath.Join(a.cfg.CurrentInputs(), filepath.Base(strings.TrimPrefix(p, "/media/input/"))), false)
 		return
 	}
 	if strings.HasPrefix(p, "/media/output/") {
 		a.serveFile(w, r, filepath.Join(a.cfg.CurrentOutputs(), filepath.Base(strings.TrimPrefix(p, "/media/output/"))), false)
+		return
+	}
+	if strings.HasPrefix(p, "/media/timeline/") {
+		a.serveFile(w, r, filepath.Join(a.cfg.CurrentTimeline(), filepath.Base(strings.TrimPrefix(p, "/media/timeline/"))), false)
+		return
+	}
+	if strings.HasPrefix(p, "/media/session/") {
+		rel := strings.TrimPrefix(p, "/media/session/")
+		abs, err := resolveSessionPath(a.cfg, rel)
+		if err != nil {
+			a.send(w, http.StatusForbidden, []byte(`{"error":"forbidden"}`), "application/json", nil)
+			return
+		}
+		a.serveFile(w, r, abs, false)
 		return
 	}
 	if strings.HasPrefix(p, "/download/") {
@@ -262,6 +289,33 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		a.json(w, map[string]any{"name": name, "inputs": listInputs(a.cfg)})
+	case "/api/timeline/render":
+		clipsRaw, ok := data["clips"].([]any)
+		if !ok || len(clipsRaw) == 0 {
+			a.jsonCode(w, map[string]any{"error": "clips must be a non-empty ordered list"}, http.StatusBadRequest)
+			return
+		}
+		clips := make([]string, 0, len(clipsRaw))
+		for _, raw := range clipsRaw {
+			clips = append(clips, anyToString(raw))
+		}
+		name, err := combineTimeline(a.cfg, anyToString(data["name"]), clips)
+		if err != nil {
+			switch t := err.(type) {
+			case commandError:
+				msg := t.Stderr
+				if len(msg) > 400 {
+					msg = msg[:400]
+				}
+				a.jsonCode(w, map[string]any{"error": msg}, http.StatusInternalServerError)
+			default:
+				a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			}
+			return
+		}
+		timeline := listTimeline(a.cfg)
+		a.runner.Emit("timeline", timeline)
+		a.json(w, map[string]any{"name": name, "timeline": timeline})
 	case "/api/delete":
 		name := anyToString(data["name"])
 		kind := anyToString(data["kind"])
@@ -275,8 +329,10 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 			filePath = filepath.Join(a.cfg.CurrentInputs(), name)
 		case "output":
 			filePath = filepath.Join(a.cfg.CurrentOutputs(), name)
+		case "timeline":
+			filePath = filepath.Join(a.cfg.CurrentTimeline(), name)
 		default:
-			a.jsonCode(w, map[string]any{"error": "invalid kind, must be 'image', 'video', 'audio', or 'output'"}, http.StatusBadRequest)
+			a.jsonCode(w, map[string]any{"error": "invalid kind, must be 'image', 'video', 'audio', 'output', or 'timeline'"}, http.StatusBadRequest)
 			return
 		}
 		if !FileExists(filePath) {
@@ -287,9 +343,14 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 			a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusInternalServerError)
 			return
 		}
+		side := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".json"
+		if FileExists(side) {
+			_ = os.Remove(side)
+		}
 		inputs := listInputs(a.cfg)
 		outputs := listOutputs(a.cfg)
-		a.json(w, map[string]any{"inputs": inputs, "outputs": outputs})
+		timeline := listTimeline(a.cfg)
+		a.json(w, map[string]any{"inputs": inputs, "outputs": outputs, "timeline": timeline})
 	default:
 		a.send(w, http.StatusNotFound, []byte(`{"error":"not found"}`), "application/json", nil)
 	}
@@ -364,6 +425,7 @@ func (a *App) events(w http.ResponseWriter, r *http.Request) {
 			"history":      a.runner.History(40),
 			"outputs":      listOutputs(a.cfg),
 			"inputs":       listInputs(a.cfg),
+			"timeline":     listTimeline(a.cfg),
 			"terminal_log": string(logData),
 		},
 	})
