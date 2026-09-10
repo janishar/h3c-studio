@@ -248,10 +248,29 @@ func extractLastFrame(cfg *Config, videoName string) (string, error) {
 	}
 	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 	dst := filepath.Join(cfg.CurrentInputs(), base+"-lastframe.png")
-	cmd := exec.Command(cfg.FFmpeg, "-y", "-i", src, "-ss", "-0.2", "-vframes", "1", "-q:v", "2", "-update", "1", dst)
-	out, err := cmd.CombinedOutput()
+
+	// Ensure output directory exists
+	inputsDir := filepath.Dir(dst)
+	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
+		return "", commandError{Err: err, Stderr: "Failed to create output directory"}
+	}
+
+	// Get video duration via ffprobe
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src)
+	durationBytes, err := cmd.Output()
 	if err != nil {
-		return "", commandError{Err: err, Stderr: string(out)}
+		return "", commandError{Err: err, Stderr: "Failed to get video duration"}
+	}
+	duration, err := strconv.ParseFloat(strings.TrimSpace(string(durationBytes)), 64)
+	if err != nil {
+		duration = 0
+	}
+
+	// Extract last frame (duration - 0.2 seconds)
+	cmd = exec.Command(cfg.FFmpeg, "-y", "-ss", fmt.Sprintf("%.2f", duration-0.2), "-i", src, "-vframes", "1", "-q:v", "2", "-update", "1", dst)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", commandError{Err: err, Stderr: string(output)}
 	}
 	return filepath.Base(dst), nil
 }

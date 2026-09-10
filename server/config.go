@@ -145,7 +145,7 @@ func (c *Config) loadLastSession() string {
 				continue
 			}
 			root := filepath.Join(c.Sessions, entry.Name())
-			if DirExists(filepath.Join(root, "input")) && DirExists(filepath.Join(root, "outputs")) {
+			if DirExists(filepath.Join(root, "inputs")) && DirExists(filepath.Join(root, "outputs")) {
 				existing = append(existing, entry.Name())
 			}
 		}
@@ -163,7 +163,7 @@ func (c *Config) ActivateSession(name string) (string, string, error) {
 		session = "session-1"
 	}
 	root := filepath.Join(c.Sessions, session)
-	inputs := filepath.Join(root, "input")
+	inputs := filepath.Join(root, "inputs")
 	outputs := filepath.Join(root, "outputs")
 	if err := os.MkdirAll(inputs, 0o755); err != nil {
 		return "", "", err
@@ -218,7 +218,7 @@ func (c *Config) SessionDirs(name string) (string, string, error) {
 		session = "default"
 	}
 	root := filepath.Join(c.Sessions, session)
-	inputs := filepath.Join(root, "input")
+	inputs := filepath.Join(root, "inputs")
 	outputs := filepath.Join(root, "outputs")
 	if err := os.MkdirAll(inputs, 0o755); err != nil {
 		return "", "", err
