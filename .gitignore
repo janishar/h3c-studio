@@ -7,3 +7,4 @@ __debug*
 go.sum
 .claude
 server/h3studio
+docs/tasks/*
