@@ -74,6 +74,7 @@ func snapFrames(requested int) int {
 
 func writeSidecar(outPath string, job *Job) {
 	meta := job.Summary()
+	delete(meta, "log")
 	if job.Started != nil && job.Finished != nil {
 		meta["duration_s"] = round2(*job.Finished - *job.Started)
 	}
@@ -106,6 +107,7 @@ func recordTake(cfg *Config, job *Job) {
 		takes = []any{}
 	}
 	entry := job.Summary()
+	delete(entry, "log")
 	if job.Started != nil && job.Finished != nil {
 		entry["duration_s"] = round2(*job.Finished - *job.Started)
 	}
@@ -516,6 +518,13 @@ func intFrom(v any, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func boolFromDefault(v any, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return boolFrom(v)
 }
 
 func boolFrom(v any) bool {

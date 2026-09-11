@@ -2,16 +2,22 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -441,6 +447,9 @@ func (r *Runner) run(job *Job) {
 	name := fmt.Sprintf("%s-%s.mp4", stem, time.Now().Format("0102-150405"))
 	outPath := filepath.Join(outputs, name)
 	cmdArgs := []string{r.cfg.H3, "--profile", "-d", r.cfg.Model, "-p", anyToString(p["prompt"])}
+	if boolFromDefault(p["preview"], true) {
+		cmdArgs = append(cmdArgs, "--show")
+	}
 	if refs, ok := p["refs"].([]any); ok {
 		for _, raw := range refs {
 			ref, ok := raw.(map[string]any)
@@ -489,6 +498,9 @@ func (r *Runner) run(job *Job) {
 	}
 	cmdArgs = append(cmdArgs, "--seed", anyToString(p["seed"]), "-o", outPath)
 	env := os.Environ()
+	if boolFromDefault(p["preview"], true) {
+		env = append(env, "KITTY_WINDOW_ID=1") // force Kitty terminal for --show preview
+	}
 	if envMap, ok := p["env"].(map[string]any); ok {
 		for key, value := range envMap {
 			text := anyToString(value)
@@ -568,6 +580,9 @@ func (r *Runner) ensureInteractiveLocked(p map[string]any) error {
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 	cmd.Env = os.Environ()
+	if boolFromDefault(p["preview"], true) {
+		cmd.Env = append(cmd.Env, "KITTY_WINDOW_ID=1") // force Kitty terminal for !show preview
+	}
 	if envMap, ok := p["env"].(map[string]any); ok {
 		for key, value := range envMap {
 			text := anyToString(value)
@@ -605,6 +620,7 @@ func (r *Runner) readInteractive(reader *os.File, cmd *exec.Cmd, done chan struc
 	defer reader.Close()
 	br := bufio.NewReader(reader)
 	var buf []byte
+	previewState := newH3PreviewState()
 	for {
 		b, err := br.ReadByte()
 		if err != nil {
@@ -616,7 +632,17 @@ func (r *Runner) readInteractive(reader *os.File, cmd *exec.Cmd, done chan struc
 			if line != "" {
 				text := line
 				r.interactiveLines <- &text
-				r.Emit("terminal", map[string]any{"line": line, "running": true})
+				r.Emit("terminal", map[string]any{"line": truncateKittyLine(line), "running": true})
+				// Check for h3 preview frames (Kitty protocol)
+				if previewData, pw, ph, pStep, pTotal, _ := tryParseH3Preview(line, previewState); previewData != "" {
+					r.Emit("preview", map[string]any{
+						"url":    previewData,
+						"width":  pw,
+						"height": ph,
+						"step":   pStep,
+						"total":  pTotal,
+					})
+				}
 			}
 			continue
 		}
@@ -717,6 +743,9 @@ func (r *Runner) runInteractive(job *Job) {
 		fmt.Sprintf("!reuse %s", anyToString(firstNonEmpty(p["reuse"], 1))),
 		fmt.Sprintf("!seed %s", anyToString(p["seed"])),
 	}
+	if boolFromDefault(p["preview"], true) {
+		commands = append(commands, "!show on")
+	}
 	if intFrom(p["render_width"], 0) != 0 && intFrom(p["render_height"], 0) != 0 {
 		commands = append(commands, fmt.Sprintf("!render-size %sx%s", anyToString(p["render_width"]), anyToString(p["render_height"])))
 	} else {
@@ -798,11 +827,206 @@ finish:
 	}
 }
 
+// h3PreviewState tracks ongoing Kitty protocol preview frame parsing.
+type h3PreviewState struct {
+	inPreview bool    // true while inside a Kitty OSC sequence
+	width     int     // frame width (from s= attribute)
+	height    int     // frame height (from v= attribute)
+	chunk     []byte  // accumulated base64 data
+	step      int     // current step number (set from "h3: preview" line)
+	total     int     // total steps (set from "h3: preview" line)
+	lastSeen  time.Time // for garbage collection of stale state
+}
+
+func newH3PreviewState() *h3PreviewState {
+	return &h3PreviewState{step: -1, total: -1}
+}
+
+// tryParseH3Preview checks if a line contains a Kitty protocol preview frame
+// and returns extracted data if found. The caller must pass the previous state.
+func tryParseH3Preview(line string, state *h3PreviewState) (frameData string, width, height, step, total int, done bool) {
+	state.lastSeen = time.Now()
+	// Detect start of Kitty protocol: \033_Ga=T,
+	osc := "\033_G"
+	idx := strings.Index(line, osc)
+	if idx >= 0 {
+		rest := line[idx+len(osc):]
+		// Parse attributes: s=W,v=H,...;
+		// Format: a=T,f=24,t=d,s=512,v=480,w=1024,h=960,m=0;<base64>
+		attrEnd := strings.Index(rest, ";")
+		if attrEnd > 0 {
+			attrs := rest[:attrEnd]
+			if m := findKV(attrs, "s="); m != "" {
+				if i, err := strconv.Atoi(m); err == nil && i > 0 {
+					width = i
+					if state.width == 0 {
+						state.width = i
+					}
+				}
+			}
+			if m := findKV(attrs, "v="); m != "" {
+				if i, err := strconv.Atoi(m); err == nil && i > 0 {
+					height = i
+					if state.height == 0 {
+						state.height = i
+					}
+				}
+			}
+			// Check if this is a preview line (has step info)
+			if state.step > 0 && state.total > 0 {
+				state.inPreview = true
+			}
+		}
+	}
+	// Detect a preview status line — this sets step/total. Interactive mode
+	// (h3_cli.c) prints "h3: preview N/T"; one-shot mode (main.c) prints
+	// "h3: denoise preview N/T, video frame M/F via <protocol>". Match on
+	// "preview " and read the "N/T" token that follows it so both formats work.
+	if !state.inPreview && strings.HasPrefix(line, "h3: ") {
+		if pIdx := strings.Index(line, "preview "); pIdx >= 0 {
+			rest := line[pIdx+len("preview "):]
+			end := strings.IndexAny(rest, ", \t")
+			if end < 0 {
+				end = len(rest)
+			}
+			numStr := strings.SplitN(rest[:end], "/", 2)
+			if len(numStr) == 2 {
+				if s, err := strconv.Atoi(numStr[0]); err == nil {
+					state.step = s
+				}
+				if t, err := strconv.Atoi(numStr[1]); err == nil {
+					state.total = t
+				}
+			}
+		}
+	}
+	// Inside Kitty protocol — accumulate every complete "\033_G<attrs>;<data>\033\\"
+	// segment present in this line. h3.c writes every chunk of a frame
+	// back-to-back with no newline in between (only a single trailing '\n'
+	// after the very last chunk), so a real image typically arrives as one
+	// line containing dozens of chunks — not one chunk per line — and each
+	// must be processed, not just the first.
+	if state.inPreview {
+		cursor := 0
+		const gStart, gTerm = "\033_G", "\033\\"
+		for {
+			relStart := strings.Index(line[cursor:], gStart)
+			if relStart < 0 {
+				break
+			}
+			segStart := cursor + relStart
+			rest := line[segStart+len(gStart):]
+			semi := strings.Index(rest, ";")
+			if semi < 0 {
+				break // attrs not fully arrived yet — wait for more data
+			}
+			relTerm := strings.Index(rest[semi+1:], gTerm)
+			if relTerm < 0 {
+				break // this chunk's data/terminator hasn't fully arrived yet
+			}
+			attrs := rest[:semi]
+			data := stringsTrimSpaceRight(rest[semi+1 : semi+1+relTerm])
+			if data != "" {
+				if state.chunk == nil {
+					state.chunk = make([]byte, 0, len(data))
+				}
+				state.chunk = append(state.chunk, []byte(data)...)
+			}
+			cursor = segStart + len(gStart) + semi + 1 + relTerm + len(gTerm)
+			// If m=0 or no more flag, this chunk completes the frame
+			more := findKV(attrs, "m=")
+			if more == "" || more == "0" {
+				if len(state.chunk) > 0 {
+					if url, ok := encodeRGB24PNGDataURL(string(state.chunk), state.width, state.height); ok {
+						frameData = url
+						done = true
+					}
+				}
+				// Capture step/total/dimensions before the reset below clears
+				// them — the attrs (s=/v=) only appear on the first chunk of a
+				// multi-chunk frame, so fall back to state here.
+				step = state.step
+				total = state.total
+				if width == 0 {
+					width = state.width
+				}
+				if height == 0 {
+					height = state.height
+				}
+				state.inPreview = false
+				state.width = 0
+				state.height = 0
+				state.step = -1
+				state.total = -1
+				state.chunk = nil
+				return
+			}
+		}
+	}
+	return
+}
+
+// encodeRGB24PNGDataURL takes the raw Kitty-protocol payload (base64-encoded
+// 24-bit RGB pixels, per h3_terminal.c's "f=24" transmission — NOT a PNG
+// file) and re-encodes it into an actual PNG so browsers can display it via
+// an <img> data: URL.
+func encodeRGB24PNGDataURL(rgbBase64 string, width, height int) (string, bool) {
+	if width <= 0 || height <= 0 {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(rgbBase64)
+	if err != nil {
+		return "", false
+	}
+	if len(raw) < width*height*3 {
+		return "", false
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		row := y * width * 3
+		for x := 0; x < width; x++ {
+			o := row + x*3
+			img.SetNRGBA(x, y, color.NRGBA{R: raw[o], G: raw[o+1], B: raw[o+2], A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return "", false
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), true
+}
+
+// truncateKittyLine shortens a raw Kitty-protocol escape line (which can run
+// to hundreds of KB of base64 for a single frame) before it goes into the
+// terminal log/SSE feed — the full line is only needed by tryParseH3Preview.
+func truncateKittyLine(line string) string {
+	const max = 80
+	if !strings.Contains(line, "\033_G") || len(line) <= max {
+		return line
+	}
+	return line[:max] + "…"
+}
+
+func findKV(attrs, prefix string) string {
+	// Simple key=value parser for a single key within the attribute string
+	idx := strings.Index(attrs, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := attrs[idx+len(prefix):]
+	end := strings.IndexAny(rest, ",; \t\n\r")
+	if end <= 0 {
+		return rest
+	}
+	return rest[:end]
+}
+
 func (r *Runner) pump(job *Job, reader *os.File) {
 	br := bufio.NewReader(reader)
 	var buf []byte
 	profRe := regexp.MustCompile(`^h3 profile:\s+(.*?)\s{2,}(\S.*?)\s+wall=\s*([\d.]+)s`)
 	progRe := regexp.MustCompile(`^(.*?)\s{2,}(\d+)/(\d+)\s*$`)
+	previewState := newH3PreviewState()
 	for {
 		b, err := br.ReadByte()
 		if err != nil {
@@ -814,7 +1038,7 @@ func (r *Runner) pump(job *Job, reader *os.File) {
 			if line == "" {
 				continue
 			}
-			job.Log = append(job.Log, line)
+			job.Log = append(job.Log, truncateKittyLine(line))
 			if len(job.Log) > 400 {
 				job.Log = job.Log[100:]
 			}
@@ -831,8 +1055,21 @@ func (r *Runner) pump(job *Job, reader *os.File) {
 					})
 				}
 			}
+			// Check for h3 preview frames (Kitty protocol)
+			if previewData, pw, ph, pStep, pTotal, previewDone := tryParseH3Preview(line, previewState); previewData != "" {
+				r.Emit("preview", map[string]any{
+					"url":    previewData,
+					"width":  pw,
+					"height": ph,
+					"step":   pStep,
+					"total":  pTotal,
+				})
+				if previewDone {
+					previewState.chunk = nil
+				}
+			}
 			r.Emit("job", job.Summary())
-			r.Emit("terminal", map[string]any{"line": line, "running": true})
+			r.Emit("terminal", map[string]any{"line": truncateKittyLine(line), "running": true})
 			continue
 		}
 		buf = append(buf, b)

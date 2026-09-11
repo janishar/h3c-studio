@@ -5,3 +5,4 @@ sessions/**
 /.gomodcache/
 __debug*
 go.sum
+.claude
