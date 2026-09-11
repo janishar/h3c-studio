@@ -126,6 +126,7 @@ function slotLabel(refs, index) {
 function resolvePrompt(doc, refs) {
   return doc.map((node) => {
     if (node.type === "text") return node.value;
+    if (node.type === "lib") return `@${node.name}`;
     const i = refs.findIndex((ref) => ref.id === node.refId);
     if (i === -1) throw new Error(`Reference no longer attached: ${node.refId}`);
     return `<${slotLabel(refs, i)}>`;
@@ -133,23 +134,30 @@ function resolvePrompt(doc, refs) {
 }
 
 function promptText(doc = state.promptDoc) {
-  return doc.map((node) => node.type === "text" ? node.value : `@${node.refId}`).join("");
+  return doc.map((node) => node.type === "text" ? node.value : `@${node.type === "lib" ? node.name : node.refId}`).join("");
 }
 
 function renderPromptEditor() {
   const editor = $("prompt");
   editor.innerHTML = "";
   state.promptDoc.forEach((node) => {
-    if (node.type === "text") editor.append(document.createTextNode(node.value));
-    else {
-      const ref = state.refs.find((item) => item.id === node.refId);
+    if (node.type === "text") { editor.append(document.createTextNode(node.value)); return; }
+    if (node.type === "lib") {
       const chip = document.createElement("span");
-      chip.className = `mention-chip${ref ? "" : " invalid"}`;
+      chip.className = "mention-chip";
       chip.contentEditable = "false";
-      chip.dataset.refId = node.refId;
-      chip.textContent = ref ? `@${ref.name} · ${slotLabel(state.refs, state.refs.indexOf(ref))}` : "⚠ removed";
+      chip.dataset.libName = node.name;
+      chip.textContent = `@${node.name}`;
       editor.append(chip);
+      return;
     }
+    const ref = state.refs.find((item) => item.id === node.refId);
+    const chip = document.createElement("span");
+    chip.className = `mention-chip${ref ? "" : " invalid"}`;
+    chip.contentEditable = "false";
+    chip.dataset.refId = node.refId;
+    chip.textContent = ref ? `@${ref.name} · ${slotLabel(state.refs, state.refs.indexOf(ref))}` : "⚠ removed";
+    editor.append(chip);
   });
 }
 
@@ -160,6 +168,8 @@ function readPromptEditor() {
       if (node.nodeValue) doc.push({ type: "text", value: node.nodeValue });
     } else if (node.nodeType === Node.ELEMENT_NODE && node.dataset.refId) {
       doc.push({ type: "ref", refId: node.dataset.refId });
+    } else if (node.nodeType === Node.ELEMENT_NODE && node.dataset.libName) {
+      doc.push({ type: "lib", name: node.dataset.libName });
     } else if (node.textContent) {
       doc.push({ type: "text", value: node.textContent });
     }
@@ -181,9 +191,6 @@ function closeMentionMenu() {
 }
 
 function insertMention(ref) {
-  if (!ref.attached) addRef(ref);
-  const attached = state.refs.find((item) => item.name === ref.name);
-  if (!attached) return;
   const mention = state.mention;
   const textNode = mention?.node;
   if (!textNode || !$("prompt").contains(textNode)) return;
@@ -191,6 +198,34 @@ function insertMention(ref) {
   range.setStart(textNode, mention.start);
   range.setEnd(textNode, mention.end);
   range.deleteContents();
+
+  // Anchors mode has no reference slots to attach to — @-mentions there are
+  // just a name chip in the prompt, not a slot attachment.
+  if (state.mode !== "ref") {
+    const chip = document.createElement("span");
+    chip.className = "mention-chip";
+    chip.contentEditable = "false";
+    chip.dataset.libName = ref.name;
+    chip.textContent = `@${ref.name}`;
+    const space = document.createTextNode(" ");
+    range.insertNode(chip);
+    chip.parentNode.insertBefore(space, chip.nextSibling);
+    const caret = document.createRange();
+    caret.setStart(space, 1);
+    caret.collapse(true);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    $("prompt").focus();
+    readPromptEditor();
+    closeMentionMenu();
+    sync();
+    return;
+  }
+
+  if (!ref.attached) addRef(ref);
+  const attached = state.refs.find((item) => item.name === ref.name);
+  if (!attached) return;
   const chip = document.createElement("span");
   chip.className = "mention-chip";
   chip.contentEditable = "false";
@@ -1235,6 +1270,7 @@ function setMode(m) {
   [...$("modeSwitch").children].forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
   $("refMode").hidden = m !== "ref";
   $("anchorMode").hidden = m === "ref";
+  if (m !== "ref") closeMentionMenu();
 }
 
 /* ── wiring ────────────────────────────────────────────────────── */
@@ -1281,8 +1317,9 @@ function init() {
     menu.style.left = `${rect.left}px`; menu.style.top = `${rect.bottom + 4}px`;
     menu.innerHTML = "";
     let lastGroup = null;
+    const inPromptOnly = state.mode !== "ref";
     options.forEach((ref, i) => {
-       const group = ref.attached ? "Attached" : "Input library";
+       const group = !inPromptOnly && ref.attached ? "Attached" : "Input library";
        if (group !== lastGroup) {
          const heading = document.createElement("div");
          heading.className = "mention-group";
@@ -1303,7 +1340,8 @@ function init() {
          preview.textContent = ref.kind === "video" ? "▶" : "♪";
        }
        const details = document.createElement("span");
-       details.innerHTML = `${ref.name}<small>${ref.attached ? "attached" : "attach from library"}</small>`;
+       const hint = inPromptOnly ? "mention in prompt" : ref.attached ? "attached" : "attach from library";
+       details.innerHTML = `${ref.name}<small>${hint}</small>`;
        button.append(preview, details);
        button.dataset.optionIndex = i;
        button.onmousedown = (event) => { event.preventDefault(); insertMention(ref); };
@@ -1334,7 +1372,8 @@ function init() {
     if (event.key === "Backspace") {
       const selection = getSelection();
       if (selection?.isCollapsed && selection.anchorNode?.nodeType === Node.TEXT_NODE &&
-          selection.anchorOffset === 0 && selection.anchorNode.previousSibling?.dataset?.refId) {
+          selection.anchorOffset === 0 &&
+          (selection.anchorNode.previousSibling?.dataset?.refId || selection.anchorNode.previousSibling?.dataset?.libName)) {
         event.preventDefault();
         selection.anchorNode.previousSibling.remove();
         readPromptEditor(); renderPromptEditor(); sync();
