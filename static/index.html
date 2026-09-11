@@ -204,6 +204,11 @@
 
     <div class="block">
       <label class="labelfield">Take name<input type="text" id="label" placeholder="shot-01"></label>
+      <label class="check"><input type="checkbox" id="previewToggle" checked> Live preview<em>decode &amp; display frames during render — slower</em></label>
+      <div class="radio-group" id="previewModeGroup">
+        <label class="check"><input type="radio" name="previewMode" id="previewModeSingle" value="single" checked> Single frame<em>middle frame of the middle chunk</em></label>
+        <label class="check"><input type="radio" name="previewMode" id="previewModeAll" value="all"> All frames in chunk<em>reveals motion at no extra decode cost</em></label>
+      </div>
       <div class="actions render-actions">
         <label class="runmode">Mode
           <select id="runMode">
@@ -226,7 +231,9 @@
   <!-- ─────────────────────────────── stage ─────────────────────────────── -->
   <section class="pane stage">
     <div class="viewer">
+      <img id="previewImg" class="preview-img" hidden />
       <video id="player" controls playsinline preload="auto"></video>
+      <div id="previewBadge" class="preview-badge" hidden>Preview</div>
       <div class="empty" id="viewerEmpty">
         <p>No take selected</p>
         <span>Render something, or pick from the takes on the right.</span>

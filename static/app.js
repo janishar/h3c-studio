@@ -79,6 +79,15 @@ const state = {
   selected: null,
   job: null,
   cfg: null,
+  preview: {
+    url: null,         // current preview data URL
+    step: 0,
+    total: 0,
+  },
+  previewQueue: [],       // buffered frames awaiting display, min 1s apart
+  previewQueueStep: null, // denoise step the queue's frames belong to
+  previewLastShownAt: 0,
+  previewTimer: null,
   tick: null,
   saveTimer: null,
   promptDoc: [{ type: "text", value: "" }],
@@ -354,6 +363,19 @@ function markChips() {
 
 function frames() { return LEGAL[+$("frames").value]; }
 
+function getPreviewMode() {
+  return document.querySelector('input[name="previewMode"]:checked')?.value === "all" ? "all" : "single";
+}
+
+function setPreviewMode(mode) {
+  const id = mode === "all" ? "previewModeAll" : "previewModeSingle";
+  $(id).checked = true;
+}
+
+function syncPreviewModeEnabled() {
+  $("previewModeGroup").classList.toggle("disabled", !$("previewToggle").checked);
+}
+
 function params() {
   const scale = +$("internal").value;
   const w = +$("width").value, h = +$("height").value;
@@ -372,6 +394,8 @@ function params() {
     int8_row_fc2: $("int8RowFc2").checked,
     ssd_streaming: $("ssdStreaming").checked,
     run_mode: $("runMode").value,
+    preview: $("previewToggle").checked,
+    previewAllFrames: getPreviewMode() === "all",
     refs: state.mode === "ref" ? state.refs.map((ref) => ({ ...ref })) : [],
     env: {},
   };
@@ -428,6 +452,7 @@ function commandPreview(p) {
   const env = Object.entries(p.env).map(([k, v]) => `${k}=${v}`).join(" ");
   const a = ["./h3", "--profile", "-d", q(state.cfg?.model || "MODEL")];
   a.push("-p", `'${p.prompt.replace(/\n/g, " ").slice(0, 60)}…'`);
+  if (p.preview) a.push("--show");
   (p.refs || []).forEach((r) => {
     if (r.kind === "image") a.push("--ref-image", q(`input/${r.name}`));
     else if (r.kind === "audio") a.push("--ref-audio", q(`input/${r.name}`));
@@ -885,12 +910,15 @@ function select(name) {
   state.selected = name;
   state.selectedTimelineName = null;
   const v = $("player");
+  clearPreview();
   v.pause();
   v.muted = false;
   v.volume = 1;
   v.src = `/media/output/${encodeURIComponent(name)}`;
   v.load();
   v.classList.add("on");
+  $("previewImg").classList.remove("on");
+  $("previewImg").hidden = true;
   $("viewerEmpty").hidden = true;
   v.play().catch((error) => appendLog("!! Playback did not start automatically: " + error.message));
   renderTakes();
@@ -964,9 +992,15 @@ function restore(o) {
   if (!p) return;
   state.promptDoc = Array.isArray(p.prompt_doc) ? p.prompt_doc : [{ type: "text", value: p.prompt || "" }];
   $("width").value = p.width; $("height").value = p.height;
+  const megapixels = (p.width * p.height) / 1e6;
+  const mpInput = $("megapixels");
+  mpInput.value = Math.min(+mpInput.max, Math.max(+mpInput.min, megapixels)).toFixed(2);
   $("steps").value = p.steps; $("layers").value = p.layers;
   $("reuse").value = p.reuse || 1; $("seed").value = p.seed;
   $("tokenReduction").checked = !!p.token_reduction;
+  $("previewToggle").checked = p.preview !== false;
+  setPreviewMode(p.previewAllFrames ? "all" : "single");
+  syncPreviewModeEnabled();
   $("frames").value = Math.max(0, LEGAL.indexOf(p.frames));
   state.refs = (p.refs || [
     ...(p.ref_images || []).map((name) => ({ name, kind: "image" })),
@@ -997,6 +1031,13 @@ async function chain(name) {
 /* ── rendering ─────────────────────────────────────────────────── */
 
 async function submit(p) {
+  // Hide any currently-shown take/preview immediately so the viewer doesn't
+  // keep displaying stale content while the new render starts up.
+  $("player").classList.remove("on");
+  $("previewImg").classList.remove("on");
+  $("previewImg").hidden = true;
+  $("viewerEmpty").hidden = false;
+  clearPreview();
   appendLog("$ " + commandPreview(p));
   const res = await fetch("/api/render", { method: "POST", body: JSON.stringify(p) });
   const data = await res.json();
@@ -1014,6 +1055,13 @@ function showJob(j) {
   $("cancel").textContent = j?.state === "cancelling" ? "Stopping…" : "Stop";
 
   if (!j) return;
+  // Clear preview when job finishes (success, failure, or cancel)
+  if (!busy) {
+    clearPreview();
+    $("previewImg").classList.remove("on");
+    $("previewImg").hidden = true;
+    $("player").classList.add("on");
+  }
   $("phaseName").textContent = j.phase || "starting";
   if (j.progress) {
     const [n, t] = j.progress;
@@ -1059,6 +1107,79 @@ function appendLog(line) {
   el.scrollTop = el.scrollHeight;
 }
 
+const PREVIEW_MIN_INTERVAL_MS = 1000;
+
+// Frames from a multi-frame preview chunk arrive back-to-back over SSE (one
+// VAE decode, N frames, no delay between them). Queue them so each stays on
+// screen at least PREVIEW_MIN_INTERVAL_MS before the next takes over, instead
+// of flickering through them almost instantly. Any frames still queued from
+// an older denoising step are dropped as soon as a newer step's frame shows
+// up, so the preview never drifts far behind actual generation progress.
+function queuePreviewFrame(payload) {
+  if (payload.step !== state.previewQueueStep) {
+    state.previewQueue = [];
+    state.previewQueueStep = payload.step;
+  }
+  state.previewQueue.push(payload);
+  if (!state.previewTimer) {
+    state.previewTimer = setInterval(drainPreviewQueue, 100);
+    drainPreviewQueue();
+  }
+}
+
+function drainPreviewQueue() {
+  if (state.previewQueue.length === 0) return;
+  const now = Date.now();
+  if (now - state.previewLastShownAt < PREVIEW_MIN_INTERVAL_MS) return;
+  const next = state.previewQueue.shift();
+  state.previewLastShownAt = now;
+  updatePreviewFrame(next);
+}
+
+function resetPreviewQueue() {
+  state.previewQueue = [];
+  state.previewQueueStep = null;
+  state.previewLastShownAt = 0;
+  if (state.previewTimer) {
+    clearInterval(state.previewTimer);
+    state.previewTimer = null;
+  }
+}
+
+function updatePreviewFrame(payload) {
+  const { url, step, total, width, height, frameIndex, frameTotal } = payload;
+  if (!url) return;
+  state.preview = { url, step, total, width, height, frameIndex, frameTotal };
+  const previewImg = $("previewImg");
+  const viewerEmpty = $("viewerEmpty");
+  // A preview event only ever arrives while a render is actively producing
+  // frames, so it should always take over the viewer immediately — gating
+  // this on state.job/state.selected raced against "job"/"queue" SSE events
+  // and could leave a stale previously-selected video showing instead.
+  previewImg.src = url;
+  previewImg.hidden = false;
+  previewImg.classList.add("on");
+  $("player").classList.remove("on");
+  viewerEmpty.hidden = true;
+  const badge = $("previewBadge");
+  if (badge) {
+    const dims = width && height ? ` · ${width}×${height}` : "";
+    const frame = frameTotal > 1 ? `, frame ${frameIndex + 1}/${frameTotal}` : "";
+    badge.textContent = `Preview ${step}/${total}${frame}${dims}`;
+    badge.title = "h3 previews its internal working frame during denoising — "
+      + "this may differ in aspect ratio from your requested output size, "
+      + "which is only applied at final encode.";
+    badge.hidden = false;
+  }
+}
+
+function clearPreview() {
+  resetPreviewQueue();
+  state.preview = { url: null, step: 0, total: 0 };
+  const badge = $("previewBadge");
+  if (badge) badge.hidden = true;
+}
+
 /* ── events ────────────────────────────────────────────────────── */
 
 function connect() {
@@ -1097,6 +1218,8 @@ function connect() {
       state.inputs = payload; renderLibrary();
     } else if (kind === "timeline") {
       state.timelineList = payload; renderTimelineList();
+    } else if (kind === "preview") {
+      queuePreviewFrame(payload);
     } else if (kind === "reload") {
       console.log('[Hot Reload] Reloading...');
       location.reload();
@@ -1123,14 +1246,17 @@ function init() {
 
   ["width", "height", "steps", "layers", "reuse", "seed", "frames",
    "label", "internal", "tokenReduction", "int8RowFc2", "ssdStreaming",
-   "zeroCopy", "prefetchDepth", "prefetchWorkers", "runMode"]
+   "zeroCopy", "prefetchDepth", "prefetchWorkers", "runMode", "previewToggle",
+   "previewModeSingle", "previewModeAll"]
     .forEach((id) => $(id).addEventListener("input", (event) => {
       if (id === "width" || id === "height") {
         $("sizePresets").dataset.native = "";
         $("sizePresets").dataset.preset = "";
       }
+      if (id === "previewToggle") syncPreviewModeEnabled();
       sync();
     }));
+  syncPreviewModeEnabled();
   $("prompt").addEventListener("input", () => {
     readPromptEditor();
     const selection = getSelection();
@@ -1274,6 +1400,9 @@ function init() {
     $("label").value = p.label || "";
     $("width").value = p.width || 512;
     $("height").value = p.height || 512;
+    const megapixels = ((p.width || 512) * (p.height || 512)) / 1e6;
+    const mpInput = $("megapixels");
+    mpInput.value = Math.min(+mpInput.max, Math.max(+mpInput.min, megapixels)).toFixed(2);
     $("steps").value = p.steps || 4;
     $("layers").value = p.layers || 50;
     $("reuse").value = p.reuse || 1;
@@ -1281,6 +1410,9 @@ function init() {
     $("frames").value = LEGAL.indexOf(p.frames);
     $("internal").value = p.render_width ? String(p.render_width / p.width) : "1";
     $("tokenReduction").checked = !!p.token_reduction;
+    $("previewToggle").checked = p.preview !== false;
+    setPreviewMode(p.previewAllFrames ? "all" : "single");
+    syncPreviewModeEnabled();
     $("int8RowFc2").checked = !!p.int8_row_fc2;
     $("ssdStreaming").checked = !!p.ssd_streaming;
     $("runMode").value = p.run_mode || "oneshot";
