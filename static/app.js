@@ -1487,6 +1487,24 @@ function init() {
     if (e.key === "Enter") $("createSession").click();
     if (e.key === "Escape") closeSessionModal();
   };
+  $("deleteSession").onclick = async () => {
+    const current = state.cfg?.session;
+    if (!current) return;
+    if (!confirm(`Delete session "${current}"?\nThis permanently removes its inputs, outputs, and settings.`)) return;
+    const res = await fetch("/api/session/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: current }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      appendLog("!! " + data.error);
+      return;
+    }
+    // Clear terminal output when deleting the current session
+    $("terminalOutput").textContent = "";
+    window.location.reload();
+  };
 
   $("scaffold").onclick = () => {
     const tokens = {};

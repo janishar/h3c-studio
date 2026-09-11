@@ -209,6 +209,8 @@ button:active { transform: translateY(1px); }
 button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 .ghost { background: transparent; color: var(--ink-2); }
 .sm { padding: 3px 8px; font-size: 11px; }
+.danger { color: color-mix(in srgb, var(--bad) 70%, var(--ink-2)); border-color: color-mix(in srgb, var(--bad) 45%, var(--line-hi)); }
+.danger:hover { background: color-mix(in srgb, var(--bad) 16%, transparent); border-color: color-mix(in srgb, var(--bad) 65%, var(--line-hi)); color: var(--bad); }
 .go { flex: 1; background: linear-gradient(135deg, #ffd580, var(--amber)); border-color: var(--amber); color: #1f1b14; font-weight: 600; padding: 9px; box-shadow: 0 6px 18px rgba(255,180,84,.16); }
 .go:hover { background: #ffc766; }
 .go:disabled { background: var(--amber-d); border-color: var(--amber-d); color: #b99a68; cursor: not-allowed; }

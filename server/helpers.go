@@ -136,6 +136,43 @@ func pruneTake(cfg *Config, outputName string) {
 	_ = WriteJSONFile(path, settings, true)
 }
 
+// deleteSession removes the named session directory and picks the session that
+// should become active afterward: the remaining session whose name sorts
+// immediately before it, falling back to the one immediately after, or the
+// deleted name itself (recreated empty) if no other sessions remain.
+func deleteSession(cfg *Config, name string) (string, error) {
+	session := safeStem(name)
+	root := filepath.Join(cfg.Sessions, session)
+	if !DirExists(root) {
+		return "", errors.New("session not found")
+	}
+	if err := os.RemoveAll(root); err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(cfg.Sessions)
+	if err != nil {
+		return session, nil
+	}
+	remaining := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if FileExists(filepath.Join(cfg.Sessions, entry.Name(), "setting.json")) {
+			remaining = append(remaining, entry.Name())
+		}
+	}
+	sort.Strings(remaining)
+	if len(remaining) == 0 {
+		return session, nil
+	}
+	idx := sort.SearchStrings(remaining, session)
+	if idx > 0 {
+		return remaining[idx-1], nil
+	}
+	return remaining[0], nil
+}
+
 func listSessions(cfg *Config) []map[string]any {
 	entries, err := os.ReadDir(cfg.Sessions)
 	if err != nil {

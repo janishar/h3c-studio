@@ -237,6 +237,19 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		a.json(w, map[string]any{"name": name, "inputs": inputs, "outputs": outputs})
+	case "/api/session/delete":
+		name := safeStem(firstString(anyToString(data["name"]), a.cfg.CurrentSession()))
+		next, err := deleteSession(a.cfg, name)
+		if err != nil {
+			a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			return
+		}
+		inputs, outputs, err := a.cfg.ActivateSession(next)
+		if err != nil {
+			a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			return
+		}
+		a.json(w, map[string]any{"name": next, "inputs": inputs, "outputs": outputs})
 	case "/api/render":
 		data["frames"] = snapFrames(intFrom(data["frames"], 22))
 		if errs := validate(data); len(errs) > 0 {
