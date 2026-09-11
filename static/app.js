@@ -490,7 +490,7 @@ function commandPreview(p) {
   const env = Object.entries(p.env).map(([k, v]) => `${k}=${v}`).join(" ");
   const a = ["./h3", "--profile", "-d", q(state.cfg?.model || "MODEL")];
   a.push("-p", `'${p.prompt.replace(/\n/g, " ").slice(0, 60)}…'`);
-  if (p.preview) a.push("--show");
+  if (p.preview) a.push("--show", "--preview-mode", "estimate");
   (p.refs || []).forEach((r) => {
     if (r.kind === "image") a.push("--ref-image", q(`inputs/${r.name}`));
     else if (r.kind === "audio") a.push("--ref-audio", q(`inputs/${r.name}`));

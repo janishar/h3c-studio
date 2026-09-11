@@ -453,7 +453,7 @@ func (r *Runner) run(job *Job) {
 	outPath := filepath.Join(outputs, name)
 	cmdArgs := []string{r.cfg.H3, "--profile", "-d", r.cfg.Model, "-p", anyToString(p["prompt"])}
 	if boolFromDefault(p["preview"], true) {
-		cmdArgs = append(cmdArgs, "--show")
+		cmdArgs = append(cmdArgs, "--show", "--preview-mode", "estimate")
 		if boolFrom(p["previewAllFrames"]) {
 			// h3.c clamps to whatever the middle chunk can actually supply,
 			// so a large sentinel always requests "as many as possible".
@@ -756,7 +756,7 @@ func (r *Runner) runInteractive(job *Job) {
 		fmt.Sprintf("!seed %s", anyToString(p["seed"])),
 	}
 	if boolFromDefault(p["preview"], true) {
-		commands = append(commands, "!show on")
+		commands = append(commands, "!show on", "!preview-mode estimate")
 	}
 	if intFrom(p["render_width"], 0) != 0 && intFrom(p["render_height"], 0) != 0 {
 		commands = append(commands, fmt.Sprintf("!render-size %sx%s", anyToString(p["render_width"]), anyToString(p["render_height"])))
