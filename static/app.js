@@ -715,7 +715,11 @@ function addRef(f) {
     if (count >= limit) return;
     const duration = Number(f.duration) || 0;
     if ((f.kind === "video" || f.kind === "audio") && duration && (duration < 2 || duration > 15)) {
-      appendLog(`!! ${f.name} must be between 2 and 15 seconds.`);
+      if (duration > 15) {
+        offerTrim(f);
+      } else {
+        appendLog(`!! ${f.name} is ${duration.toFixed(1)}s; Ref2VA needs at least 2s.`);
+      }
       return;
     }
     const usedDuration = state.refs.reduce((sum, ref) => sum + (Number(ref.duration) || 0), 0);
@@ -731,6 +735,28 @@ function addRef(f) {
     renderRefs();
   }
   sync();
+}
+
+async function offerTrim(f) {
+  const duration = Number(f.duration) || 0;
+  const maxStart = Math.max(0, duration - 2);
+  const startInput = prompt(
+    `${f.name} is ${duration.toFixed(1)}s; Ref2VA references must be 2-15s.\n` +
+    `Trim starting at (seconds, 0-${maxStart.toFixed(1)}):`,
+    "0",
+  );
+  if (startInput === null) return;
+  const start = Math.min(Math.max(Number(startInput) || 0, 0), maxStart);
+  const length = Math.min(14.8, duration - start);
+  const res = await fetch("/api/trim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: f.name, start, length }),
+  });
+  const data = await res.json();
+  if (data.error) { appendLog("!! " + data.error); return; }
+  if (data.inputs) { state.inputs = data.inputs; renderLibrary(); }
+  if (data.name) addRef({ name: data.name, kind: f.kind, duration: data.duration });
 }
 
 function renderAnchors() {

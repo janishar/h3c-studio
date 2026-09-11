@@ -302,6 +302,44 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		a.json(w, map[string]any{"name": name, "inputs": listInputs(a.cfg)})
+	case "/api/trim":
+		// Cap a touch under 15s: ffprobe's duration estimate for formats like
+		// MP3 is approximate, so a clip requested at exactly 15.0s can probe
+		// a little over and fail the 2-15s check all over again.
+		length := floatFrom(data["length"], 14.8)
+		if length > 14.8 {
+			length = 14.8
+		}
+		if length < 2 {
+			length = 2
+		}
+		name, err := trimMedia(a.cfg, anyToString(data["name"]), floatFrom(data["start"], 0), length)
+		if err != nil {
+			switch t := err.(type) {
+			case commandError:
+				msg := t.Stderr
+				if len(msg) > 400 {
+					msg = msg[:400]
+				}
+				a.jsonCode(w, map[string]any{"error": msg}, http.StatusInternalServerError)
+			default:
+				a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			}
+			return
+		}
+		inputs := listInputs(a.cfg)
+		a.runner.Emit("inputs", inputs)
+		response := map[string]any{"name": name, "kind": nil, "duration": nil, "inputs": inputs}
+		for _, entry := range inputs {
+			if anyToString(entry["name"]) == name {
+				response["kind"] = entry["kind"]
+				if value, ok := entry["duration"]; ok {
+					response["duration"] = value
+				}
+				break
+			}
+		}
+		a.json(w, response)
 	case "/api/timeline/render":
 		clipsRaw, ok := data["clips"].([]any)
 		if !ok || len(clipsRaw) == 0 {

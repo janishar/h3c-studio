@@ -339,6 +339,37 @@ func extractLastFrame(cfg *Config, videoName string) (string, error) {
 	return filepath.Base(dst), nil
 }
 
+// trimMedia cuts [start, start+length) out of an existing input's audio or
+// video file, saving the clip as a new input file — used to bring a
+// reference that's outside Ref2VA's 2-15s window into range without the
+// caller needing their own copy of ffmpeg.
+func trimMedia(cfg *Config, name string, start, length float64) (string, error) {
+	src := filepath.Join(cfg.CurrentInputs(), filepath.Base(name))
+	if !FileExists(src) {
+		return "", os.ErrNotExist
+	}
+	if start < 0 {
+		start = 0
+	}
+	ext := filepath.Ext(src)
+	base := strings.TrimSuffix(filepath.Base(src), ext)
+	dst := filepath.Join(cfg.CurrentInputs(), fmt.Sprintf("%s-trim%s", base, ext))
+	for i := 1; FileExists(dst); i++ {
+		dst = filepath.Join(cfg.CurrentInputs(), fmt.Sprintf("%s-trim-%d%s", base, i, ext))
+	}
+	// -ss after -i (slower, decodes up to the seek point) instead of before
+	// it, so the cut lands exactly where asked instead of snapping to the
+	// nearest preceding sync point and running long.
+	cmd := exec.Command(cfg.FFmpeg, "-y", "-i", src,
+		"-ss", fmt.Sprintf("%.2f", start), "-t", fmt.Sprintf("%.2f", length),
+		"-c", "copy", dst)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", commandError{Err: err, Stderr: string(output)}
+	}
+	return filepath.Base(dst), nil
+}
+
 func validate(params map[string]any) []string {
 	errs := []string{}
 	w, h := intFrom(params["width"], 0), intFrom(params["height"], 0)
@@ -555,6 +586,14 @@ func intFrom(v any, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func floatFrom(v any, fallback float64) float64 {
+	f, err := floatFromStrict(v)
+	if err != nil || v == nil {
+		return fallback
+	}
+	return f
 }
 
 func boolFromDefault(v any, def bool) bool {
