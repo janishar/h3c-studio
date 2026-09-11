@@ -884,6 +884,7 @@ function renderTakes() {
     video.preload = "metadata";
     video.playsInline = true;
     video.setAttribute("aria-hidden", "true");
+    forceThumbFrame(video);
     thumb.append(video);
     const info = document.createElement("div");
     info.className = "info";
@@ -932,6 +933,16 @@ function renderTakes() {
     li.onclick = (e) => { if (e.target.tagName !== "BUTTON") select(o.name); };
     ul.append(li);
   });
+}
+
+function forceThumbFrame(video) {
+  // A muted <video preload="metadata"> often paints nothing until it's
+  // seeked, even once its data is fully loaded — force a tiny seek so the
+  // thumbnail always shows an actual frame instead of staying black.
+  if (!video) return;
+  video.addEventListener("loadedmetadata", () => {
+    try { video.currentTime = Math.min(0.1, (video.duration || 0.2) / 2); } catch (e) {}
+  }, { once: true });
 }
 
 function mkBtn(label, fn) {
@@ -989,6 +1000,7 @@ function renderTimelineList() {
     video.preload = "metadata";
     video.playsInline = true;
     video.setAttribute("aria-hidden", "true");
+    forceThumbFrame(video);
     thumb.append(video);
     const info = document.createElement("div");
     info.className = "info";
@@ -1142,7 +1154,7 @@ function appendLog(line) {
   el.scrollTop = el.scrollHeight;
 }
 
-const PREVIEW_MIN_INTERVAL_MS = 1000;
+const PREVIEW_MIN_INTERVAL_MS = 300;
 
 // Frames from a multi-frame preview chunk arrive back-to-back over SSE (one
 // VAE decode, N frames, no delay between them). Queue them so each stays on
@@ -1868,6 +1880,7 @@ function init() {
         <div class="meta">${f.duration ? f.duration.toFixed(2) + "s" : ""}</div>
         ${count ? `<div class="pickcount">${count}</div>` : ""}
       `;
+      forceThumbFrame(div.querySelector("video"));
       div.classList.toggle("selected", count > 0);
       div.onclick = () => addClipToSequence(f);
       list.append(div);
@@ -1926,6 +1939,7 @@ function init() {
         </div>
         <button class="remove" type="button" data-index="${index}">✕</button>
       `;
+      forceThumbFrame(div.querySelector("video"));
       div.addEventListener("dragstart", (e) => {
         dragFromIndex = index;
         div.classList.add("dragging");
