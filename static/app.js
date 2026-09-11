@@ -84,6 +84,10 @@ const state = {
     step: 0,
     total: 0,
   },
+  previewQueue: [],       // buffered frames awaiting display, min 1s apart
+  previewQueueStep: null, // denoise step the queue's frames belong to
+  previewLastShownAt: 0,
+  previewTimer: null,
   tick: null,
   saveTimer: null,
   promptDoc: [{ type: "text", value: "" }],
@@ -359,6 +363,19 @@ function markChips() {
 
 function frames() { return LEGAL[+$("frames").value]; }
 
+function getPreviewMode() {
+  return document.querySelector('input[name="previewMode"]:checked')?.value === "all" ? "all" : "single";
+}
+
+function setPreviewMode(mode) {
+  const id = mode === "all" ? "previewModeAll" : "previewModeSingle";
+  $(id).checked = true;
+}
+
+function syncPreviewModeEnabled() {
+  $("previewModeGroup").classList.toggle("disabled", !$("previewToggle").checked);
+}
+
 function params() {
   const scale = +$("internal").value;
   const w = +$("width").value, h = +$("height").value;
@@ -378,6 +395,7 @@ function params() {
     ssd_streaming: $("ssdStreaming").checked,
     run_mode: $("runMode").value,
     preview: $("previewToggle").checked,
+    previewAllFrames: getPreviewMode() === "all",
     refs: state.mode === "ref" ? state.refs.map((ref) => ({ ...ref })) : [],
     env: {},
   };
@@ -981,6 +999,8 @@ function restore(o) {
   $("reuse").value = p.reuse || 1; $("seed").value = p.seed;
   $("tokenReduction").checked = !!p.token_reduction;
   $("previewToggle").checked = p.preview !== false;
+  setPreviewMode(p.previewAllFrames ? "all" : "single");
+  syncPreviewModeEnabled();
   $("frames").value = Math.max(0, LEGAL.indexOf(p.frames));
   state.refs = (p.refs || [
     ...(p.ref_images || []).map((name) => ({ name, kind: "image" })),
@@ -1087,10 +1107,49 @@ function appendLog(line) {
   el.scrollTop = el.scrollHeight;
 }
 
+const PREVIEW_MIN_INTERVAL_MS = 1000;
+
+// Frames from a multi-frame preview chunk arrive back-to-back over SSE (one
+// VAE decode, N frames, no delay between them). Queue them so each stays on
+// screen at least PREVIEW_MIN_INTERVAL_MS before the next takes over, instead
+// of flickering through them almost instantly. Any frames still queued from
+// an older denoising step are dropped as soon as a newer step's frame shows
+// up, so the preview never drifts far behind actual generation progress.
+function queuePreviewFrame(payload) {
+  if (payload.step !== state.previewQueueStep) {
+    state.previewQueue = [];
+    state.previewQueueStep = payload.step;
+  }
+  state.previewQueue.push(payload);
+  if (!state.previewTimer) {
+    state.previewTimer = setInterval(drainPreviewQueue, 100);
+    drainPreviewQueue();
+  }
+}
+
+function drainPreviewQueue() {
+  if (state.previewQueue.length === 0) return;
+  const now = Date.now();
+  if (now - state.previewLastShownAt < PREVIEW_MIN_INTERVAL_MS) return;
+  const next = state.previewQueue.shift();
+  state.previewLastShownAt = now;
+  updatePreviewFrame(next);
+}
+
+function resetPreviewQueue() {
+  state.previewQueue = [];
+  state.previewQueueStep = null;
+  state.previewLastShownAt = 0;
+  if (state.previewTimer) {
+    clearInterval(state.previewTimer);
+    state.previewTimer = null;
+  }
+}
+
 function updatePreviewFrame(payload) {
-  const { url, step, total, width, height } = payload;
+  const { url, step, total, width, height, frameIndex, frameTotal } = payload;
   if (!url) return;
-  state.preview = { url, step, total, width, height };
+  state.preview = { url, step, total, width, height, frameIndex, frameTotal };
   const previewImg = $("previewImg");
   const viewerEmpty = $("viewerEmpty");
   // A preview event only ever arrives while a render is actively producing
@@ -1105,7 +1164,8 @@ function updatePreviewFrame(payload) {
   const badge = $("previewBadge");
   if (badge) {
     const dims = width && height ? ` · ${width}×${height}` : "";
-    badge.textContent = `Preview ${step}/${total}${dims}`;
+    const frame = frameTotal > 1 ? `, frame ${frameIndex + 1}/${frameTotal}` : "";
+    badge.textContent = `Preview ${step}/${total}${frame}${dims}`;
     badge.title = "h3 previews its internal working frame during denoising — "
       + "this may differ in aspect ratio from your requested output size, "
       + "which is only applied at final encode.";
@@ -1114,6 +1174,7 @@ function updatePreviewFrame(payload) {
 }
 
 function clearPreview() {
+  resetPreviewQueue();
   state.preview = { url: null, step: 0, total: 0 };
   const badge = $("previewBadge");
   if (badge) badge.hidden = true;
@@ -1158,7 +1219,7 @@ function connect() {
     } else if (kind === "timeline") {
       state.timelineList = payload; renderTimelineList();
     } else if (kind === "preview") {
-      updatePreviewFrame(payload);
+      queuePreviewFrame(payload);
     } else if (kind === "reload") {
       console.log('[Hot Reload] Reloading...');
       location.reload();
@@ -1185,14 +1246,17 @@ function init() {
 
   ["width", "height", "steps", "layers", "reuse", "seed", "frames",
    "label", "internal", "tokenReduction", "int8RowFc2", "ssdStreaming",
-   "zeroCopy", "prefetchDepth", "prefetchWorkers", "runMode", "previewToggle"]
+   "zeroCopy", "prefetchDepth", "prefetchWorkers", "runMode", "previewToggle",
+   "previewModeSingle", "previewModeAll"]
     .forEach((id) => $(id).addEventListener("input", (event) => {
       if (id === "width" || id === "height") {
         $("sizePresets").dataset.native = "";
         $("sizePresets").dataset.preset = "";
       }
+      if (id === "previewToggle") syncPreviewModeEnabled();
       sync();
     }));
+  syncPreviewModeEnabled();
   $("prompt").addEventListener("input", () => {
     readPromptEditor();
     const selection = getSelection();
@@ -1347,6 +1411,8 @@ function init() {
     $("internal").value = p.render_width ? String(p.render_width / p.width) : "1";
     $("tokenReduction").checked = !!p.token_reduction;
     $("previewToggle").checked = p.preview !== false;
+    setPreviewMode(p.previewAllFrames ? "all" : "single");
+    syncPreviewModeEnabled();
     $("int8RowFc2").checked = !!p.int8_row_fc2;
     $("ssdStreaming").checked = !!p.ssd_streaming;
     $("runMode").value = p.run_mode || "oneshot";

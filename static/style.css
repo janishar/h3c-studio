@@ -198,6 +198,10 @@ input[type=number] { font-family: var(--mono); }
 .check input { margin: 0; accent-color: var(--amber); }
 .check em { font-style: normal; font-size: 11px; color: var(--ink-3); }
 
+.radio-group { margin-left: 22px; padding-left: 8px; border-left: 1px solid var(--line); }
+.radio-group.disabled { opacity: .4; pointer-events: none; }
+.radio-group .check { margin-top: 6px; }
+
 button { font: 500 12px var(--sans); border-radius: var(--r); cursor: pointer; border: 1px solid var(--line-hi); background: var(--raised); color: var(--ink); padding: 7px 12px; transition: background .16s, border-color .16s, transform .16s; }
 button:hover { border-color: #596b7f; }
 button:hover { background: var(--raised-2); }

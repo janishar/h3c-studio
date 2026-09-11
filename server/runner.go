@@ -454,6 +454,11 @@ func (r *Runner) run(job *Job) {
 	cmdArgs := []string{r.cfg.H3, "--profile", "-d", r.cfg.Model, "-p", anyToString(p["prompt"])}
 	if boolFromDefault(p["preview"], true) {
 		cmdArgs = append(cmdArgs, "--show")
+		if boolFrom(p["previewAllFrames"]) {
+			// h3.c clamps to whatever the middle chunk can actually supply,
+			// so a large sentinel always requests "as many as possible".
+			cmdArgs = append(cmdArgs, "--preview-frames", "999")
+		}
 	}
 	if refs, ok := p["refs"].([]any); ok {
 		for _, raw := range refs {
@@ -639,13 +644,15 @@ func (r *Runner) readInteractive(reader *os.File, cmd *exec.Cmd, done chan struc
 				r.interactiveLines <- &text
 				r.Emit("terminal", map[string]any{"line": truncateKittyLine(line), "running": true})
 				// Check for h3 preview frames (Kitty protocol)
-				if previewData, pw, ph, pStep, pTotal, _ := tryParseH3Preview(line, previewState); previewData != "" {
+				if previewData, pw, ph, pStep, pTotal, pFrameIndex, pFrameTotal, _ := tryParseH3Preview(line, previewState); previewData != "" {
 					r.Emit("preview", map[string]any{
-						"url":    previewData,
-						"width":  pw,
-						"height": ph,
-						"step":   pStep,
-						"total":  pTotal,
+						"url":        previewData,
+						"width":      pw,
+						"height":     ph,
+						"step":       pStep,
+						"total":      pTotal,
+						"frameIndex": pFrameIndex,
+						"frameTotal": pFrameTotal,
 					})
 				}
 			}
@@ -834,22 +841,24 @@ finish:
 
 // h3PreviewState tracks ongoing Kitty protocol preview frame parsing.
 type h3PreviewState struct {
-	inPreview bool    // true while inside a Kitty OSC sequence
-	width     int     // frame width (from s= attribute)
-	height    int     // frame height (from v= attribute)
-	chunk     []byte  // accumulated base64 data
-	step      int     // current step number (set from "h3: preview" line)
-	total     int     // total steps (set from "h3: preview" line)
-	lastSeen  time.Time // for garbage collection of stale state
+	inPreview  bool    // true while inside a Kitty OSC sequence
+	width      int     // frame width (from s= attribute)
+	height     int     // frame height (from v= attribute)
+	chunk      []byte  // accumulated base64 data
+	step       int     // current step number (set from "h3: preview" line)
+	total      int     // total steps (set from "h3: preview" line)
+	frameIndex int     // current video frame index (set from "frame M/F")
+	frameTotal int     // total video frames in the preview chunk
+	lastSeen   time.Time // for garbage collection of stale state
 }
 
 func newH3PreviewState() *h3PreviewState {
-	return &h3PreviewState{step: -1, total: -1}
+	return &h3PreviewState{step: -1, total: -1, frameIndex: -1, frameTotal: -1}
 }
 
 // tryParseH3Preview checks if a line contains a Kitty protocol preview frame
 // and returns extracted data if found. The caller must pass the previous state.
-func tryParseH3Preview(line string, state *h3PreviewState) (frameData string, width, height, step, total int, done bool) {
+func tryParseH3Preview(line string, state *h3PreviewState) (frameData string, width, height, step, total, frameIndex, frameTotal int, done bool) {
 	state.lastSeen = time.Now()
 	// Detect start of Kitty protocol: \033_Ga=T,
 	osc := "\033_G"
@@ -903,6 +912,26 @@ func tryParseH3Preview(line string, state *h3PreviewState) (frameData string, wi
 					state.total = t
 				}
 			}
+			// Both status-line formats also carry a "frame M/F" token for the
+			// decoded video-frame position within the preview chunk:
+			// interactive "h3: preview N/T, frame M/F" and one-shot
+			// "h3: denoise preview N/T, video frame M/F via <protocol>".
+			if fIdx := strings.Index(line, "frame "); fIdx >= 0 {
+				frest := line[fIdx+len("frame "):]
+				fend := strings.IndexAny(frest, ", \t")
+				if fend < 0 {
+					fend = len(frest)
+				}
+				fNumStr := strings.SplitN(frest[:fend], "/", 2)
+				if len(fNumStr) == 2 {
+					if fi, err := strconv.Atoi(fNumStr[0]); err == nil {
+						state.frameIndex = fi
+					}
+					if ft, err := strconv.Atoi(fNumStr[1]); err == nil {
+						state.frameTotal = ft
+					}
+				}
+			}
 		}
 	}
 	// Inside Kitty protocol — accumulate every complete "\033_G<attrs>;<data>\033\\"
@@ -952,6 +981,8 @@ func tryParseH3Preview(line string, state *h3PreviewState) (frameData string, wi
 				// multi-chunk frame, so fall back to state here.
 				step = state.step
 				total = state.total
+				frameIndex = state.frameIndex
+				frameTotal = state.frameTotal
 				if width == 0 {
 					width = state.width
 				}
@@ -963,6 +994,8 @@ func tryParseH3Preview(line string, state *h3PreviewState) (frameData string, wi
 				state.height = 0
 				state.step = -1
 				state.total = -1
+				state.frameIndex = -1
+				state.frameTotal = -1
 				state.chunk = nil
 				return
 			}
@@ -1061,13 +1094,15 @@ func (r *Runner) pump(job *Job, reader *os.File) {
 				}
 			}
 			// Check for h3 preview frames (Kitty protocol)
-			if previewData, pw, ph, pStep, pTotal, previewDone := tryParseH3Preview(line, previewState); previewData != "" {
+			if previewData, pw, ph, pStep, pTotal, pFrameIndex, pFrameTotal, previewDone := tryParseH3Preview(line, previewState); previewData != "" {
 				r.Emit("preview", map[string]any{
-					"url":    previewData,
-					"width":  pw,
-					"height": ph,
-					"step":   pStep,
-					"total":  pTotal,
+					"url":        previewData,
+					"width":      pw,
+					"height":     ph,
+					"step":       pStep,
+					"total":      pTotal,
+					"frameIndex": pFrameIndex,
+					"frameTotal": pFrameTotal,
 				})
 				if previewDone {
 					previewState.chunk = nil
