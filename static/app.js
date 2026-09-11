@@ -974,6 +974,9 @@ function restore(o) {
   if (!p) return;
   state.promptDoc = Array.isArray(p.prompt_doc) ? p.prompt_doc : [{ type: "text", value: p.prompt || "" }];
   $("width").value = p.width; $("height").value = p.height;
+  const megapixels = (p.width * p.height) / 1e6;
+  const mpInput = $("megapixels");
+  mpInput.value = Math.min(+mpInput.max, Math.max(+mpInput.min, megapixels)).toFixed(2);
   $("steps").value = p.steps; $("layers").value = p.layers;
   $("reuse").value = p.reuse || 1; $("seed").value = p.seed;
   $("tokenReduction").checked = !!p.token_reduction;
@@ -1085,9 +1088,9 @@ function appendLog(line) {
 }
 
 function updatePreviewFrame(payload) {
-  const { url, step, total } = payload;
+  const { url, step, total, width, height } = payload;
   if (!url) return;
-  state.preview = { url, step, total };
+  state.preview = { url, step, total, width, height };
   const previewImg = $("previewImg");
   const viewerEmpty = $("viewerEmpty");
   // A preview event only ever arrives while a render is actively producing
@@ -1101,7 +1104,11 @@ function updatePreviewFrame(payload) {
   viewerEmpty.hidden = true;
   const badge = $("previewBadge");
   if (badge) {
-    badge.textContent = `Preview ${step}/${total}`;
+    const dims = width && height ? ` · ${width}×${height}` : "";
+    badge.textContent = `Preview ${step}/${total}${dims}`;
+    badge.title = "h3 previews its internal working frame during denoising — "
+      + "this may differ in aspect ratio from your requested output size, "
+      + "which is only applied at final encode.";
     badge.hidden = false;
   }
 }
@@ -1329,6 +1336,9 @@ function init() {
     $("label").value = p.label || "";
     $("width").value = p.width || 512;
     $("height").value = p.height || 512;
+    const megapixels = ((p.width || 512) * (p.height || 512)) / 1e6;
+    const mpInput = $("megapixels");
+    mpInput.value = Math.min(+mpInput.max, Math.max(+mpInput.min, megapixels)).toFixed(2);
     $("steps").value = p.steps || 4;
     $("layers").value = p.layers || 50;
     $("reuse").value = p.reuse || 1;
