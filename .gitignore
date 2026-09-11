@@ -6,3 +6,4 @@ sessions/**
 __debug*
 go.sum
 .claude
+server/h3studio
