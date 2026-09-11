@@ -1008,6 +1008,13 @@ async function chain(name) {
 /* ── rendering ─────────────────────────────────────────────────── */
 
 async function submit(p) {
+  // Hide any currently-shown take/preview immediately so the viewer doesn't
+  // keep displaying stale content while the new render starts up.
+  $("player").classList.remove("on");
+  $("previewImg").classList.remove("on");
+  $("previewImg").hidden = true;
+  $("viewerEmpty").hidden = false;
+  clearPreview();
   appendLog("$ " + commandPreview(p));
   const res = await fetch("/api/render", { method: "POST", body: JSON.stringify(p) });
   const data = await res.json();

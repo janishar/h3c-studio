@@ -421,6 +421,11 @@ func (r *Runner) loop() {
 				r.proc = nil
 				r.mu.Unlock()
 				recordTake(r.cfg, job)
+				if job.State == "done" {
+					// Persist the exact params that produced a successful take,
+					// as a safety net beyond the client's debounced auto-save.
+					_, _ = saveSession(r.cfg, job.Params)
+				}
 				r.Emit("job", job.Summary())
 				r.Emit("queue", r.QueueState())
 				r.Emit("outputs", listOutputs(r.cfg))
