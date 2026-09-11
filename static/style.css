@@ -292,7 +292,7 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .library .delete-file { position: absolute; top: 2px; right: 2px; padding: 0 5px; line-height: 17px; background: rgba(11,14,20,.85); border-color: var(--line-hi); color: var(--ink-2); }
 .library .delete-file:hover { color: var(--bad); border-color: var(--bad); }
 .library img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); }
-.library .nonimg { display: flex; align-items: center; justify-content: center; aspect-ratio: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; font: 400 9px var(--mono); color: var(--ink-3); }
+.library .nonimg { display: flex; align-items: flex-start; justify-content: flex-start; padding: 4px 5px; aspect-ratio: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; font: 400 9px var(--mono); color: var(--ink-3); }
 .library video { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); display: block; pointer-events: none; }
 .library figure:hover img, .library figure:hover .nonimg, .library figure:hover video { border-color: var(--amber); }
 .library .play-input {

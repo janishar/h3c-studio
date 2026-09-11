@@ -491,15 +491,15 @@ function commandPreview(p) {
   a.push("-p", `'${p.prompt.replace(/\n/g, " ").slice(0, 60)}…'`);
   if (p.preview) a.push("--show");
   (p.refs || []).forEach((r) => {
-    if (r.kind === "image") a.push("--ref-image", q(`input/${r.name}`));
-    else if (r.kind === "audio") a.push("--ref-audio", q(`input/${r.name}`));
-    else if (r.mode === "silent") a.push("--ref-silent-video", q(`input/${r.name}`));
+    if (r.kind === "image") a.push("--ref-image", q(`inputs/${r.name}`));
+    else if (r.kind === "audio") a.push("--ref-audio", q(`inputs/${r.name}`));
+    else if (r.mode === "silent") a.push("--ref-silent-video", q(`inputs/${r.name}`));
     else if (r.mode === "replace" && r.pairedAudio) {
-      a.push("--ref-video-audio", q(`input/${r.name}`), q(`input/${r.pairedAudio}`));
-    } else a.push("--ref-video", q(`input/${r.name}`));
+      a.push("--ref-video-audio", q(`inputs/${r.name}`), q(`inputs/${r.pairedAudio}`));
+    } else a.push("--ref-video", q(`inputs/${r.name}`));
   });
-  if (p.first_frame) a.push("--first-frame", q(`input/${p.first_frame}`));
-  if (p.last_frame) a.push("--last-frame", q(`input/${p.last_frame}`));
+  if (p.first_frame) a.push("--first-frame", q(`inputs/${p.first_frame}`));
+  if (p.last_frame) a.push("--last-frame", q(`inputs/${p.last_frame}`));
   a.push("--width", p.width, "--height", p.height);
   if (p.render_width) a.push("--render-width", p.render_width, "--render-height", p.render_height);
   a.push("--frames", p.frames, "--steps", p.steps, "--layers", p.layers, "--reuse", p.reuse);
