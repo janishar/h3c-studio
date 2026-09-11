@@ -97,6 +97,7 @@ const state = {
   timelineSeq: [],        // {path, name, duration} clips picked for the sequence being built
   timelineBrowse: null,   // last /api/timeline/browse response
   timelineBrowsePath: "",
+  interactiveLoaded: false, // whether "Load h3.c" has started a live interactive process
 };
 
 const SIZES = [
@@ -1169,6 +1170,9 @@ function showJob(j) {
   $("lamp").classList.toggle("busy", !!busy);
   $("lampText").textContent = busy ? (j.phase || "rendering") : "idle";
   $("render").disabled = !!busy || !!localErrors(params()).length;
+  if (state.interactiveLoaded) {
+    $("sendH3").disabled = !!busy || !!localErrors(params()).length;
+  }
   $("cancel").disabled = !!(busy && j.state === "cancelling");
   $("cancel").textContent = j?.state === "cancelling" ? "Stopping…" : "Stop";
 
@@ -1691,6 +1695,11 @@ function init() {
   $("anchorLast").onclick = () => { state.last = null; renderAnchors(); sync(); };
 
   $("render").onclick = () => submit(params());
+  $("sendH3").onclick = () => {
+    // Send to h3.c always targets the already-loaded interactive process,
+    // regardless of what the Mode dropdown is currently set to.
+    submit({ ...params(), run_mode: "interactive" });
+  };
   $("queueBtn").onclick = () => {
     const base = params();
     for (let i = 0; i < 3; i++) {
@@ -1753,6 +1762,7 @@ function init() {
     if (data.error) appendLog("!! " + data.error);
     else {
       appendLog("$ h3 -d " + state.cfg.model);
+      state.interactiveLoaded = true;
       $("sendH3").disabled = false;
       $("runMode").value = "interactive";
       sync();
