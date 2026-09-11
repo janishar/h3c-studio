@@ -468,13 +468,15 @@ function localErrors(p) {
   const images = refs.filter((r) => r.kind === "image");
   const videos = refs.filter((r) => r.kind === "video");
   const audio = refs.filter((r) => r.kind === "audio");
-  const duration = refs.reduce((sum, r) => sum + (Number(r.duration) || 0), 0);
+  const videoDuration = videos.reduce((sum, r) => sum + (Number(r.duration) || 0), 0);
+  const audioDuration = audio.reduce((sum, r) => sum + (Number(r.duration) || 0), 0);
   if (audio.length && !images.length && !videos.length)
     e.push("A standalone audio reference must accompany an image or video.");
   if (images.length > 9) e.push("At most 9 image references.");
   if (videos.length > 3) e.push("At most 3 video references.");
   if (audio.length > 3) e.push("At most 3 audio references.");
-  if (duration > 15) e.push(`Combined reference duration is ${duration.toFixed(1)}s; the limit is 15s.`);
+  if (videoDuration > 15) e.push(`Combined video reference duration is ${videoDuration.toFixed(1)}s; the limit is 15s.`);
+  if (audioDuration > 15) e.push(`Combined audio reference duration is ${audioDuration.toFixed(1)}s; the limit is 15s.`);
   if (refs.some((ref) => ref.kind === "video" && ref.mode === "replace" && !ref.pairedAudio))
     e.push("Choose replacement audio for every video in replace mode.");
   if (state.mode === "anchor" && !state.first && !state.last)
@@ -614,12 +616,15 @@ function renderRefs() {
     ul.append(li);
   });
   const counts = { image: 0, video: 0, audio: 0 };
-  let duration = 0;
-  state.refs.forEach((ref) => { counts[ref.kind]++; duration += Number(ref.duration) || 0; });
+  const durations = { video: 0, audio: 0 };
+  state.refs.forEach((ref) => {
+    counts[ref.kind]++;
+    if (ref.kind === "video" || ref.kind === "audio") durations[ref.kind] += Number(ref.duration) || 0;
+  });
   $("refHint").hidden = false;
   $("refHint").innerHTML =
-    `Pictures ${counts.image}/9 · Videos ${counts.video}/3 · Audio ${counts.audio}/3 · ` +
-    `duration ${duration.toFixed(1)}/15.0s · Click a label to insert it.`;
+    `Pictures ${counts.image}/9 · Videos ${counts.video}/3 (${durations.video.toFixed(1)}/15.0s) · ` +
+    `Audio ${counts.audio}/3 (${durations.audio.toFixed(1)}/15.0s) · Click a label to insert it.`;
 }
 
 function renderLibrary() {
@@ -634,9 +639,27 @@ function renderLibrary() {
       img.alt = f.name;
       fig.append(img);
     } else {
-      const d = document.createElement("div");
-      d.className = "nonimg"; d.textContent = f.kind;
-      fig.append(d);
+      if (f.kind === "video") {
+        const video = document.createElement("video");
+        video.src = `/media/input/${encodeURIComponent(f.name)}`;
+        video.muted = true;
+        video.preload = "metadata";
+        video.playsInline = true;
+        video.setAttribute("aria-hidden", "true");
+        forceThumbFrame(video);
+        fig.append(video);
+      } else {
+        const d = document.createElement("div");
+        d.className = "nonimg"; d.textContent = f.kind;
+        fig.append(d);
+      }
+      const playBtn = document.createElement("button");
+      playBtn.className = "play-input";
+      playBtn.type = "button";
+      playBtn.title = `Play ${f.name}`;
+      playBtn.textContent = "▶";
+      playBtn.onclick = (e) => { e.stopPropagation(); playInput(f.name); };
+      fig.append(playBtn);
     }
     const delBtn = document.createElement("button");
     delBtn.className = "delete-file";
@@ -648,6 +671,25 @@ function renderLibrary() {
     fig.onclick = () => addRef(f);
     wrap.append(fig);
   });
+}
+
+function playInput(name) {
+  state.selected = null;
+  state.selectedTimelineName = null;
+  const v = $("player");
+  clearPreview();
+  v.pause();
+  v.muted = false;
+  v.volume = 1;
+  v.src = `/media/input/${encodeURIComponent(name)}`;
+  v.load();
+  v.classList.add("on");
+  $("previewImg").classList.remove("on");
+  $("previewImg").hidden = true;
+  $("viewerEmpty").hidden = true;
+  v.play().catch((error) => appendLog("!! Playback did not start automatically: " + error.message));
+  renderTakes();
+  renderTimelineList();
 }
 
 async function deleteFile(name, kind) {
@@ -722,10 +764,14 @@ function addRef(f) {
       }
       return;
     }
-    const usedDuration = state.refs.reduce((sum, ref) => sum + (Number(ref.duration) || 0), 0);
-    if (usedDuration + duration > 15) {
-      appendLog("!! Combined video and audio duration cannot exceed 15 seconds.");
-      return;
+    if (f.kind === "video" || f.kind === "audio") {
+      const usedDuration = state.refs
+        .filter((ref) => ref.kind === f.kind)
+        .reduce((sum, ref) => sum + (Number(ref.duration) || 0), 0);
+      if (usedDuration + duration > 15) {
+        appendLog(`!! Combined ${f.kind} reference duration cannot exceed 15 seconds.`);
+        return;
+      }
     }
     state.refs.push({
       id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
@@ -766,44 +812,43 @@ function renderAnchors() {
   $("anchorLast").classList.toggle("set", !!state.last);
 }
 
-function useRef(o) {
-  const p = o.meta?.params;
-  if (!p) return;
-  
-  // Check if video already exists in refs
-  const existingVideo = state.refs.find((ref) => ref.kind === "video" && ref.name === o.name);
-  if (existingVideo) {
-    appendLog(`!! ${o.name} is already in references.`);
+async function useRef(o) {
+  if (state.mode === "anchor") {
+    appendLog("!! Cannot add video to anchors. Switch to Reference mode.");
     return;
   }
-  
-  // Check limits
+
   const videoCount = state.refs.filter((ref) => ref.kind === "video").length;
   if (videoCount >= 3) {
     appendLog("!! Maximum 3 video references allowed.");
     return;
   }
-  
-  // Get duration from metadata or estimate
-  const duration = p.duration_s || null;
-  
-  if (state.mode === "anchor") {
-    appendLog("!! Cannot add video to anchors. Switch to Reference mode.");
+
+  // Takes live in outputs/, but refs are read from inputs/ — copy it over first.
+  const res = await fetch("/api/use-ref", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: o.name }),
+  });
+  const data = await res.json();
+  if (data.error) {
+    appendLog("!! " + data.error);
     return;
   }
-  
+  if (data.inputs) { state.inputs = data.inputs; renderLibrary(); }
+
   state.refs.push({
     id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
-    name: o.name,
+    name: data.name,
     kind: "video",
     mode: "keep",
     pairedAudio: null,
-    duration: duration,
+    duration: data.duration ?? o.meta?.params?.duration_s ?? null,
   });
-  
+
   renderRefs();
   sync();
-  appendLog(`Added ${o.name} to references as Video ${videoCount + 1}.`);
+  appendLog(`Added ${data.name} to references as Video ${videoCount + 1}.`);
 }
 
 async function useFrame(o) {
@@ -1580,6 +1625,25 @@ function init() {
     }
     // Clear terminal output when deleting the current session
     $("terminalOutput").textContent = "";
+    window.location.reload();
+  };
+  $("duplicateSession").onclick = async () => {
+    const current = state.cfg?.session;
+    if (!current) return;
+    const name = prompt("Name for the duplicated session:", `${current}-copy`);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) { appendLog("!! Enter a session name."); return; }
+    const res = await fetch("/api/session/duplicate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: current, as: trimmed }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      appendLog("!! " + data.error);
+      return;
+    }
     window.location.reload();
   };
 

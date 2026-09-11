@@ -250,6 +250,19 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		a.json(w, map[string]any{"name": next, "inputs": inputs, "outputs": outputs})
+	case "/api/session/duplicate":
+		src := safeStem(firstString(anyToString(data["name"]), a.cfg.CurrentSession()))
+		dup, err := duplicateSession(a.cfg, src, anyToString(data["as"]))
+		if err != nil {
+			a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			return
+		}
+		inputs, outputs, err := a.cfg.ActivateSession(dup)
+		if err != nil {
+			a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			return
+		}
+		a.json(w, map[string]any{"name": dup, "inputs": inputs, "outputs": outputs})
 	case "/api/render":
 		data["frames"] = snapFrames(intFrom(data["frames"], 22))
 		if errs := validate(data); len(errs) > 0 {
@@ -302,6 +315,25 @@ func (a *App) handlePost(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		a.json(w, map[string]any{"name": name, "inputs": listInputs(a.cfg)})
+	case "/api/use-ref":
+		name, err := importOutputAsInput(a.cfg, anyToString(data["name"]))
+		if err != nil {
+			a.jsonCode(w, map[string]any{"error": err.Error()}, http.StatusBadRequest)
+			return
+		}
+		inputs := listInputs(a.cfg)
+		a.runner.Emit("inputs", inputs)
+		response := map[string]any{"name": name, "kind": nil, "duration": nil, "inputs": inputs}
+		for _, entry := range inputs {
+			if anyToString(entry["name"]) == name {
+				response["kind"] = entry["kind"]
+				if value, ok := entry["duration"]; ok {
+					response["duration"] = value
+				}
+				break
+			}
+		}
+		a.json(w, response)
 	case "/api/trim":
 		// Cap a touch under 15s: ffprobe's duration estimate for formats like
 		// MP3 is approximate, so a clip requested at exactly 15.0s can probe

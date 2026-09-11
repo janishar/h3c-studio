@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -173,6 +174,76 @@ func deleteSession(cfg *Config, name string) (string, error) {
 	return remaining[0], nil
 }
 
+// duplicateSession copies a session's setting, inputs, outputs, and timeline
+// into a new session directory, leaving the source untouched. If dstName is
+// empty, it picks "<src>-copy", "<src>-copy-2", … — whichever isn't taken.
+func duplicateSession(cfg *Config, srcName, dstName string) (string, error) {
+	src := safeStem(srcName)
+	srcRoot := filepath.Join(cfg.Sessions, src)
+	if !DirExists(srcRoot) {
+		return "", errors.New("session not found")
+	}
+	var dst string
+	if stringsTrimSpace(dstName) == "" {
+		dst = src + "-copy"
+		for i := 2; DirExists(filepath.Join(cfg.Sessions, dst)); i++ {
+			dst = fmt.Sprintf("%s-copy-%d", src, i)
+		}
+	} else {
+		dst = safeStem(dstName)
+		if DirExists(filepath.Join(cfg.Sessions, dst)) {
+			return "", errors.New("a session with that name already exists")
+		}
+	}
+	dstRoot := filepath.Join(cfg.Sessions, dst)
+	if err := copyDir(srcRoot, dstRoot); err != nil {
+		_ = os.RemoveAll(dstRoot)
+		return "", err
+	}
+	settingPath := filepath.Join(dstRoot, "setting.json")
+	if data := readJSONObject(settingPath); len(data) > 0 {
+		data["session_name"] = dst
+		_ = WriteJSONFile(settingPath, data, true)
+	}
+	_ = os.WriteFile(filepath.Join(dstRoot, "terminal.log"), []byte{}, 0o644)
+	return dst, nil
+}
+
+func copyDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return copyFile(path, target)
+	})
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
 func listSessions(cfg *Config) []map[string]any {
 	entries, err := os.ReadDir(cfg.Sessions)
 	if err != nil {
@@ -339,6 +410,26 @@ func extractLastFrame(cfg *Config, videoName string) (string, error) {
 	return filepath.Base(dst), nil
 }
 
+// importOutputAsInput copies a rendered take from outputs/ into inputs/ so it
+// can be attached as a reference — refs are read from the inputs directory
+// (see Runner.run), so a take's own filename isn't reachable there on its own.
+func importOutputAsInput(cfg *Config, name string) (string, error) {
+	src := filepath.Join(cfg.CurrentOutputs(), filepath.Base(name))
+	if !FileExists(src) {
+		return "", os.ErrNotExist
+	}
+	ext := filepath.Ext(src)
+	base := strings.TrimSuffix(filepath.Base(src), ext)
+	dst := filepath.Join(cfg.CurrentInputs(), base+ext)
+	for i := 1; FileExists(dst); i++ {
+		dst = filepath.Join(cfg.CurrentInputs(), fmt.Sprintf("%s-%d%s", base, i, ext))
+	}
+	if err := copyFile(src, dst); err != nil {
+		return "", err
+	}
+	return filepath.Base(dst), nil
+}
+
 // trimMedia cuts [start, start+length) out of an existing input's audio or
 // video file, saving the clip as a new input file — used to bring a
 // reference that's outside Ref2VA's 2-15s window into range without the
@@ -424,13 +515,14 @@ func validate(params map[string]any) []string {
 		errs = append(errs, "Ref2VA references can't be combined with first/last frame anchors.")
 	}
 	images, videos, audio := 0, 0, 0
-	totalDuration := 0.0
+	videoDuration, audioDuration := 0.0, 0.0
 	for _, raw := range refs {
 		ref, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
-		switch anyToString(ref["kind"]) {
+		kind := anyToString(ref["kind"])
+		switch kind {
 		case "image":
 			images++
 		case "video":
@@ -438,8 +530,15 @@ func validate(params map[string]any) []string {
 		case "audio":
 			audio++
 		}
-		if value, err := floatFromStrict(ref["duration"]); err == nil {
-			totalDuration += value
+		value, err := floatFromStrict(ref["duration"])
+		if err != nil {
+			continue
+		}
+		switch kind {
+		case "video":
+			videoDuration += value
+		case "audio":
+			audioDuration += value
 		}
 	}
 	if audio > 0 && images == 0 && videos == 0 {
@@ -454,8 +553,11 @@ func validate(params map[string]any) []string {
 	if audio > 3 {
 		errs = append(errs, "At most 3 audio references.")
 	}
-	if totalDuration > 15 {
-		errs = append(errs, fmt.Sprintf("Combined reference duration is %.1fs; the limit is 15s.", totalDuration))
+	if videoDuration > 15 {
+		errs = append(errs, fmt.Sprintf("Combined video reference duration is %.1fs; the limit is 15s.", videoDuration))
+	}
+	if audioDuration > 15 {
+		errs = append(errs, fmt.Sprintf("Combined audio reference duration is %.1fs; the limit is 15s.", audioDuration))
 	}
 	return errs
 }
