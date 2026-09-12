@@ -2,25 +2,6 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "h3 studio (web UI)",
-      "type": "go",
-      "request": "launch",
-      "mode": "auto",
-      "program": "${workspaceFolder}",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "GOCACHE": "${workspaceFolder}/.gocache",
-        "H3_ZERO_COPY_WEIGHTS": "0"
-      },
-      "args": [
-        "--h3",
-        "${workspaceFolder}/h3c/h3",
-        "--model",
-        "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
-        "--dev"
-      ]
-    },
-    {
       "name": "h3 studio (custom paths)",
       "type": "go",
       "request": "launch",
