@@ -302,6 +302,8 @@ into one continuous shot:
   <a href="docs/assets/timeline-1.mp4">download the clip</a> instead.
 </video>
 
+https://github.com/user-attachments/assets/d7991a0b-a7eb-44d0-a7d4-5fdf9392eebe
+
 </td>
 <td valign="top">
 
