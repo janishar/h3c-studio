@@ -697,10 +697,16 @@ func (r *Runner) interactiveSendLocked(line string) error {
 	if r.interactiveIn == nil {
 		return fmt.Errorf("interactive stdin unavailable")
 	}
-	if _, err := io.WriteString(r.interactiveIn, line+"\n"); err != nil {
+	// The h3 REPL reads stdin one line at a time and treats a blank line as
+	// "repeat the last command". A multi-paragraph prompt containing embedded
+	// newlines (blank lines between sections) would otherwise be split into
+	// several stdin lines, silently re-triggering the render once per blank
+	// line. Flatten to a single line so the whole prompt is one command.
+	flat := strings.Join(strings.Fields(line), " ")
+	if _, err := io.WriteString(r.interactiveIn, flat+"\n"); err != nil {
 		return err
 	}
-	r.Emit("terminal", map[string]any{"line": "h3> " + line, "running": true})
+	r.Emit("terminal", map[string]any{"line": "h3> " + flat, "running": true})
 	return nil
 }
 
@@ -739,7 +745,7 @@ func (r *Runner) runInteractive(job *Job) {
 		job.Error = &msg
 		return
 	}
-	inputs, _, err := r.cfg.SessionDirs(anyToString(job.Params["session_name"]))
+	inputs, outputs, err := r.cfg.SessionDirs(anyToString(job.Params["session_name"]))
 	if err != nil {
 		msg := err.Error()
 		job.State = "failed"
@@ -801,6 +807,41 @@ func (r *Runner) runInteractive(job *Job) {
 	}
 	job.Command = append(append([]string{}, commands...), prompt)
 	doneRe := regexp.MustCompile(`Done -> (.+?) \[`)
+	// h3's own diagnostics (cache hits/misses, GPU scheduling notes, preview
+	// step lines, etc.) all share the same "h3: " prefix as fatal errors, so
+	// that prefix alone can't distinguish a real failure from routine status
+	// output — treating every "h3: " line as fatal used to kill job tracking
+	// (and the UI's progress bar) within the first few seconds of every
+	// render. Success/failure is instead decided the same way the one-shot
+	// path decides it: a "Done -> ..." line, or the process exiting/timing
+	// out without one.
+	progRe := regexp.MustCompile(`^(.*?)\s{2,}(\d+)/(\d+)\s*$`)
+	profRe := regexp.MustCompile(`^h3 profile:\s+(.*?)\s{2,}(\S.*?)\s+wall=\s*([\d.]+)s`)
+	// h3's "Done -> ..." success line is printed with printf (stdout), while
+	// virtually everything else it logs goes through fprintf(stderr, ...).
+	// Since stdout is a plain pipe here rather than a tty, libc fully
+	// block-buffers it — the line can sit in the child's own stdio buffer
+	// indefinitely once it goes back to waiting at its prompt, never reaching
+	// us. Fall back to noticing a new output file on disk so a render isn't
+	// stuck "running" forever just because that one line never flushed.
+	// h3 numbers output files per-process (video-0001.mp4, video-0002.mp4, ...
+	// restarting from 1 every time the interactive process is (re)loaded), so
+	// a filename alone doesn't tell us a file is new: a fresh render can
+	// overwrite a stale file left over from an earlier session. Track mtimes
+	// instead, so a rewritten file is recognized even when its name collides
+	// with something already on disk.
+	initialModTime := map[string]time.Time{}
+	if entries, err := os.ReadDir(outputs); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".mp4") {
+				continue
+			}
+			if info, err := e.Info(); err == nil {
+				initialModTime[e.Name()] = info.ModTime()
+			}
+		}
+	}
+	candidateSize := map[string]int64{}
 	deadline := time.Now().Add(time.Hour)
 	var output string
 	for time.Now().Before(deadline) {
@@ -810,16 +851,53 @@ func (r *Runner) runInteractive(job *Job) {
 			if line == nil {
 				goto finish
 			}
-			if m := doneRe.FindStringSubmatch(*line); len(m) == 2 {
+			text := *line
+			job.Log = append(job.Log, truncateKittyLine(text))
+			if len(job.Log) > 400 {
+				job.Log = job.Log[100:]
+			}
+			if m := doneRe.FindStringSubmatch(text); len(m) == 2 {
 				output = stringsTrimSpace(m[1])
 				goto finish
 			}
-			if len(*line) >= 4 && (*line)[:4] == "h3: " {
-				msg := *line
-				job.Error = &msg
-				goto finish
+			if m := progRe.FindStringSubmatch(text); len(m) == 4 {
+				job.Phase = stringsTrimSpace(m[1])
+				job.Progress = []int{intFrom(m[2], 0), intFrom(m[3], 0)}
+			} else if len(text) >= 11 && text[:11] == "h3 profile:" {
+				if m := profRe.FindStringSubmatch(text); len(m) == 4 {
+					wall, _ := strconv.ParseFloat(m[3], 64)
+					job.Profile = append(job.Profile, map[string]any{
+						"component": stringsTrimSpace(m[1]),
+						"stage":     stringsTrimSpace(m[2]),
+						"wall":      wall,
+					})
+				}
 			}
+			r.Emit("job", job.Summary())
 		case <-time.After(minDuration(remaining, 500*time.Millisecond)):
+			entries, err := os.ReadDir(outputs)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				name := e.Name()
+				if e.IsDir() || !strings.HasSuffix(name, ".mp4") {
+					continue
+				}
+				info, err := e.Info()
+				if err != nil {
+					continue
+				}
+				if initial, ok := initialModTime[name]; ok && info.ModTime().Equal(initial) {
+					continue // untouched leftover from before this job started
+				}
+				size := info.Size()
+				if prev, ok := candidateSize[name]; ok && prev == size && size > 0 {
+					output = filepath.Join(outputs, name)
+					goto finish
+				}
+				candidateSize[name] = size
+			}
 		}
 	}
 finish:

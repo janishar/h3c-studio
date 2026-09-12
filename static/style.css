@@ -358,8 +358,22 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .terminalprompt { color: var(--term-prompt); font: 400 12px var(--mono); }
 .terminalform input { flex: 1; min-width: 0; border: 0; padding: 4px 0; background: transparent; color: var(--term-text); font: 400 11px var(--mono); }
 .terminalform input:focus { box-shadow: none; }
+.group-divider {
+  display: flex; align-items: center; gap: 8px; margin-top: 13px;
+  color: var(--ink-3); font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+}
+.group-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .interactiveform { border-top: 1px solid var(--line); }
-.interactive-actions { margin-top: 8px; }
+.interactive-actions {
+  margin-top: 8px; gap: 0;
+  border: 1px solid var(--line-hi); border-radius: var(--r); overflow: hidden;
+}
+.interactive-actions button {
+  flex: 1; border: 0; border-radius: 0; background: var(--raised);
+}
+.interactive-actions button:hover { border: 0; }
+.interactive-actions button:first-child { border-right: 1px solid var(--line-hi); }
+.interactive-actions button:disabled { background: transparent; color: var(--ink-3); cursor: not-allowed; }
 #profile { width: 100%; border-collapse: collapse; font: 400 11px var(--mono); }
 #profile td { padding: 6px 13px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
 #profile td:last-child { text-align: right; color: var(--ink); }
