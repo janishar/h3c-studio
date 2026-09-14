@@ -10,11 +10,7 @@ var (
 	// h3 prints progress as "\r%-25s %4d/%-4d" (phase, completed, total).
 	progressRE = regexp.MustCompile(`^(\S.*?)\s+(\d+)/(\d+)\s*$`)
 	profileRE  = regexp.MustCompile(`^h3 profile:\s+(.*?)\s{2,}(\S.*?)\s+wall=\s*([\d.]+)s`)
-	doneRE     = regexp.MustCompile(`Done -> (.+?) \[`)
 )
-
-// Stages shown by the UI's stepper, in order.
-var stageOrder = []string{"load", "encode", "denoise", "decode", "mp4"}
 
 // phaseStages maps h3.c's progress phase names (h3.c h3_progress_emit and
 // h3_dit.c report calls) onto the stepper stages.
