@@ -43,7 +43,7 @@ Open a [GitHub issue](https://github.com/janishar/h3c-studio/issues) with:
    gofmt -l main.go server
    go vet ./...
    go test -race ./...
-   node --test static/
+   node --test static/canvas.test.js
    ```
 
    CI runs the same checks plus `staticcheck`. Server tests don't need the

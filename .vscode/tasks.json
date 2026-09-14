@@ -39,7 +39,7 @@
       "label": "test: canvas.js (node)",
       "type": "shell",
       "command": "node",
-      "args": ["--test", "static/"],
+      "args": ["--test", "static/canvas.test.js"],
       "options": { "cwd": "${workspaceFolder}" },
       "group": "test",
       "problemMatcher": []

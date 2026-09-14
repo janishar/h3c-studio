@@ -1,4 +1,4 @@
-// Tests for static/canvas.js — run with `node --test static/`.
+// Tests for static/canvas.js — run with `node --test static/canvas.test.js`.
 "use strict";
 
 const test = require("node:test");

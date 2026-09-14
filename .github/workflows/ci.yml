@@ -44,4 +44,4 @@ jobs:
       - name: Syntax-check the UI scripts
         run: for f in static/*.js; do node --check "$f"; done
       - name: canvas.js tests
-        run: node --test static/
+        run: node --test static/canvas.test.js
