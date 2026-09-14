@@ -17,6 +17,32 @@
         "isDefault": true
       },
       "problemMatcher": ["$go"]
+    },
+    {
+      "label": "test: go (race)",
+      "type": "shell",
+      "command": "go",
+      "args": ["test", "-race", "./..."],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "GOCACHE": "${workspaceFolder}/.gocache"
+        }
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "test: canvas.js (node)",
+      "type": "shell",
+      "command": "node",
+      "args": ["--test", "static/"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "problemMatcher": []
     }
   ]
 }

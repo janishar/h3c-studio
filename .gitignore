@@ -4,7 +4,6 @@ sessions/**
 /.gocache/
 /.gomodcache/
 __debug*
-go.sum
 .claude
 server/h3studio
 docs/tasks/*

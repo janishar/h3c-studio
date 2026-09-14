@@ -7,45 +7,11 @@
 <link rel="stylesheet" href="/static/style.css">
 <script>
 // Apply the saved theme before first paint to avoid a flash of the wrong theme.
-(function() {
+(function () {
   try {
     const saved = localStorage.getItem("h3studio-theme");
     if (saved === "light" || saved === "dark") document.documentElement.dataset.theme = saved;
   } catch (e) {}
-})();
-</script>
-<script>
-// Auto-reload on file changes
-(function() {
-  const reloadInterval = 30000; // Check every 30 seconds
-  const checkInterval = setInterval(() => {
-    fetch('/static/style.css?t=' + Date.now())
-      .then(res => {
-        if (!res.ok) return;
-        return res.text();
-      })
-      .then(css => {
-        if (css) {
-          const link = document.querySelector('link[rel="stylesheet"]');
-          if (link) {
-            link.href = '/static/style.css?t=' + Date.now();
-            console.log('Stylesheet reloaded');
-          }
-        }
-      })
-      .catch(err => console.log('Reload check failed:', err));
-  }, reloadInterval);
-
-  // Reload on visibility change (when user comes back to tab)
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      const link = document.querySelector('link[rel="stylesheet"]');
-      if (link) {
-        link.href = '/static/style.css?t=' + Date.now();
-        console.log('Stylesheet reloaded on tab visibility');
-      }
-    }
-  });
 })();
 </script>
 </head>
@@ -53,202 +19,229 @@
 
 <header class="bar">
   <div class="mark">h3 <span>studio</span></div>
-  <label class="sessionbar">Session
-    <select id="sessionSelect" aria-label="Existing sessions">
-      <option value="">Select session</option>
-    </select>
-    <button class="ghost sm" id="newSession" type="button">New session</button>
-    <button class="ghost sm" id="duplicateSession" type="button">Duplicate session</button>
-    <button class="ghost sm danger" id="deleteSession" type="button">Delete session</button>
-  </label>
-  <div class="pathbuttons" id="pathButtons">
+  <div class="sessionbar">
+    <label for="sessionSelect">Session</label>
+    <select id="sessionSelect" aria-label="Session"></select>
+    <div class="menuwrap">
+      <button class="ghost sm" id="sessionMenuBtn" type="button" aria-haspopup="menu" aria-expanded="false" title="Session actions">⋯</button>
+      <div class="popmenu" id="sessionMenu" role="menu" hidden>
+        <button type="button" role="menuitem" id="newSession">New session…</button>
+        <button type="button" role="menuitem" id="duplicateSession">Duplicate session…</button>
+        <button type="button" role="menuitem" class="danger-item" id="deleteSession">Delete session…</button>
+      </div>
+    </div>
+  </div>
+  <div class="barright">
     <button class="pathbutton" id="timelineButton" type="button">Create Timeline</button>
-    <button class="pathbutton" id="modelButton" type="button">Model</button>
+    <button class="pathbutton" id="modelButton" type="button"><i class="dot" id="modelDot"></i>Model</button>
+    <button class="pathbutton icon" id="notifyButton" type="button" title="Notify me when a render finishes" aria-pressed="false">🔔</button>
+    <div class="modeswitch themeswitch" id="themeSwitch" role="radiogroup" aria-label="Theme">
+      <button data-theme="system" class="on" type="button" title="Match system">🖥</button>
+      <button data-theme="light" type="button" title="Light">☀</button>
+      <button data-theme="dark" type="button" title="Dark">🌙</button>
+    </div>
+    <div class="lamp" id="lamp"><i></i><span id="lampText">idle</span></div>
   </div>
-  <div class="pathpanel" id="pathPanel" hidden>
-    <div><b>h3</b><code id="h3Path"></code></div>
-    <div><b>Model</b><code id="modelPath"></code></div>
-    <button class="ghost sm" id="changeH3" type="button">Choose h3 path</button>
-    <button class="ghost sm" id="changeModel" type="button">Choose model path</button>
-  </div>
-  <div class="modeswitch themeswitch" id="themeSwitch" role="radiogroup" aria-label="Theme">
-    <button data-theme="system" class="on" type="button" title="Match system">🖥</button>
-    <button data-theme="light" type="button" title="Light">☀</button>
-    <button data-theme="dark" type="button" title="Dark">🌙</button>
-  </div>
-  <div class="lamp" id="lamp"><i></i><span id="lampText">idle</span></div>
 </header>
 
 <main class="grid">
 
   <!-- ─────────────────────────────── setup ─────────────────────────────── -->
   <section class="pane setup">
+    <div class="setup-scroll">
 
-    <div class="block">
-      <div class="blockhead">
-        <h2>References</h2>
-        <div class="modeswitch" id="modeSwitch">
-          <button data-mode="ref" class="on">Reference</button>
-          <button data-mode="anchor">Anchors</button>
+      <div class="block">
+        <div class="blockhead">
+          <h2>Conditioning</h2>
+          <div class="modeswitch" id="modeSwitch" role="radiogroup" aria-label="Conditioning mode">
+            <button data-mode="text" type="button">Prompt</button>
+            <button data-mode="anchor" type="button">Anchors</button>
+            <button data-mode="ref" type="button" class="on">References</button>
+          </div>
+        </div>
+        <p class="warn" id="modeUnavailable" hidden></p>
+
+        <div class="drop" id="drop">
+          <p>Drop images, clips or audio here</p>
+          <label class="ghost browse">browse<input type="file" id="file" multiple hidden></label>
+        </div>
+
+        <div id="refMode">
+          <ol class="reflist" id="refList"></ol>
+          <p class="hint" id="refHint"></p>
+        </div>
+
+        <div id="anchorMode" hidden>
+          <div class="anchorpair">
+            <button type="button" class="anchor" id="anchorFirst" title="Click to clear"><span>First frame</span><em>none</em></button>
+            <button type="button" class="anchor" id="anchorLast" title="Click to clear"><span>Last frame</span><em>none</em></button>
+          </div>
+          <p class="hint">Anchors use FL2VA. Click an input below to fill the next empty anchor.</p>
+        </div>
+
+        <p class="hint" id="textModeHint" hidden>Prompt only — no references or anchors (FL2VA). Inputs below can still be mentioned with @.</p>
+
+        <div class="library" id="library"></div>
+      </div>
+
+      <div class="block">
+        <div class="blockhead">
+          <h2>Prompt</h2>
+          <span class="count" id="promptCount"></span>
+        </div>
+        <div id="prompt" class="prompt-editor" contenteditable="true" role="textbox"
+             aria-multiline="true" aria-label="Prompt" data-placeholder="Scene: …&#10;Action: …&#10;Camera: …&#10;Look: …&#10;Audio: …"></div>
+        <div id="mentionMenu" class="mention-menu" hidden></div>
+        <div class="prompt-actions">
+          <button class="ghost sm" id="scaffold" type="button">Insert structure</button>
+          <div class="menuwrap">
+            <button class="ghost sm" id="historyBtn" type="button" aria-haspopup="menu">History ▾</button>
+            <div class="popmenu wide" id="historyMenu" role="menu" hidden></div>
+          </div>
+          <button class="ghost sm" id="clearPrompt" type="button" title="Clear the prompt">Clear</button>
         </div>
       </div>
 
-      <div class="drop" id="drop">
-        <p>Drop images, clips or audio here</p>
-        <label class="ghost">browse<input type="file" id="file" multiple hidden></label>
-      </div>
-
-      <div id="refMode">
-        <ol class="reflist" id="refList"></ol>
-        <p class="hint" id="refHint">Order sets <code>&lt;Picture 1&gt;</code>, <code>&lt;Picture 2&gt;</code>… Drag to reorder.</p>
-      </div>
-
-      <div id="anchorMode" hidden>
-        <div class="anchorpair">
-          <div class="anchor" id="anchorFirst"><span>First frame</span><em>none</em></div>
-          <div class="anchor" id="anchorLast"><span>Last frame</span><em>none</em></div>
+      <div class="block">
+        <h2>Canvas</h2>
+        <div class="resolution-row">
+          <label class="size-select">Aspect ratio
+            <select id="aspectSelect" aria-label="Aspect ratio"></select>
+          </label>
+          <label class="resolution-stat">Megapixels
+            <input type="range" id="megapixels" min="0.1" max="1.03" step="0.01" value="0.26">
+            <output id="megapixelsValue">0.26 MP</output>
+          </label>
         </div>
-        <p class="hint">Anchors use FL2VA. Match your image aspect to the output aspect or the first frame gets stretched.</p>
+        <div class="canvas-readout">
+          <span><b id="resolvedDimensions">512 × 512</b> resolved</span>
+          <span><b id="actualMegapixels">0.26 MP</b> actual</span>
+          <span><b id="actualRatio">1.000</b> ratio</span>
+          <span><b id="latentSize">32 × 32</b> latent · ×32 grid</span>
+        </div>
+        <div class="fields">
+          <label>Width<input type="number" id="width" step="32" min="32" value="512"></label>
+          <label>Height<input type="number" id="height" step="32" min="32" value="512"></label>
+        </div>
+        <div class="fields">
+          <label>Internal render<select id="internal">
+            <option value="1">Full</option>
+            <option value="0.75">75% — fast</option>
+            <option value="0.625">62% — aggressive</option>
+          </select></label>
+          <label>Seed<div class="seedrow">
+            <input type="number" id="seed" value="42">
+            <button class="ghost sm" id="dice" type="button" title="Random seed">↻</button>
+          </div></label>
+        </div>
+        <p class="warn" id="sizeWarn" hidden></p>
+        <p class="warn" id="aspectWarn" hidden></p>
       </div>
 
-      <div class="library" id="library"></div>
-    </div>
-
-    <div class="block">
-      <div class="blockhead">
-        <h2>Prompt</h2>
-        <span class="count" id="promptCount"></span>
+      <div class="block">
+        <div class="blockhead"><h2>Duration</h2><span class="fpsbadge">24 FPS</span></div>
+        <div class="duration-slider">
+          <input type="range" id="frames" min="0" max="21" value="1" aria-label="Duration">
+          <div class="duration-markers" aria-hidden="true">
+            <span style="left: 33.333%">5</span>
+            <span style="left: 66.667%">10</span>
+            <span style="left: 100%">15</span>
+          </div>
+        </div>
+        <div class="readout"><b id="frameCount">22</b> frames<span id="frameSecs">0.92 s</span></div>
+        <p class="hint">H3 converts requests to its legal frame grid: 5 + 17n.</p>
       </div>
-      <div id="prompt" class="prompt-editor" contenteditable="true" role="textbox"
-           aria-multiline="true" data-placeholder="Scene: …&#10;Action: …&#10;Camera: …&#10;Look: …&#10;Audio: …"></div>
-      <div id="mentionMenu" class="mention-menu" hidden></div>
-      <div class="prompt-actions">
-        <button class="ghost sm" id="scaffold">Insert structure</button>
-        <button class="ghost sm" id="clearPrompt" title="Clear the prompt">Clear</button>
-      </div>
-    </div>
 
-    <div class="block">
-      <h2>Canvas</h2>
-      <div class="resolution-row">
-        <label class="size-select">Output resolution
-          <select id="sizePresets" aria-label="Output resolution"></select>
+      <div class="block">
+        <h2>Quality</h2>
+        <div class="chips" id="qualityPresets"></div>
+        <div class="fields three">
+          <label>Steps<input type="number" id="steps" min="2" max="1000" value="4"></label>
+          <label>Layers<input type="number" id="layers" min="35" max="50" value="50"></label>
+          <label>Reuse<input type="number" id="reuse" min="1" max="3" value="1"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="tokenReduction"> Token reduction<em>faster, can shift composition</em></label>
+        <label class="check"><input type="checkbox" id="int8RowFc2"> Fast int8 FC2<em>M5 only</em></label>
+      </div>
+
+      <details class="block">
+        <summary><h2>Environment</h2></summary>
+        <label class="check"><input type="checkbox" id="zeroCopy" checked> Copy weights into memory<em>set this when the model lives on an external drive</em></label>
+        <label class="check"><input type="checkbox" id="ssdStreaming"> Stream DiT from disk<em>cuts memory, much slower over USB</em></label>
+        <div class="fields">
+          <label>Qwen prefetch depth<input type="number" id="prefetchDepth" min="1" max="6" placeholder="default"></label>
+          <label>Prefetch workers<input type="number" id="prefetchWorkers" min="1" max="8" placeholder="default"></label>
+        </div>
+        <label class="labelfield extra">Extra arguments
+          <input type="text" id="extraArgs" placeholder="--use-reference-rope --ref-image-size max" autocomplete="off" spellcheck="false">
         </label>
-        <label class="resolution-stat">Megapixels
-          <input type="range" id="megapixels" min="0.1" max="1.03" step="0.01" value="0.5">
-          <output id="megapixelsValue">0.50 MP</output>
-        </label>
-      </div>
-      <div class="canvas-readout">
-        <span><b id="resolvedDimensions">512 × 512</b> resolved</span>
-        <span><b id="actualMegapixels">0.26 MP</b> actual</span>
-        <span><b id="actualRatio">1.000</b> ratio</span>
-        <span><b id="shortEdge">short edge 512</b></span>
-      </div>
-      <div class="native-canvas">
-        <span>Native canvas</span>
-        <button type="button" data-native="landscape">Landscape — 1344 × 768</button>
-        <button type="button" data-native="portrait">Portrait — 768 × 1344</button>
-      </div>
-      <div class="fields">
-        <label>Width<input type="number" id="width" step="32" value="512"></label>
-        <label>Height<input type="number" id="height" step="32" value="512"></label>
-      </div>
-      <div class="fields">
-        <label>Internal render<select id="internal">
-          <option value="1">Full</option>
-          <option value="0.75">75% — fast</option>
-          <option value="0.625">62% — aggressive</option>
-        </select></label>
-        <label>Seed<div class="seedrow">
-          <input type="number" id="seed" value="42">
-          <button class="ghost sm" id="dice" title="Random seed">↻</button>
-        </div></label>
-      </div>
-      <p class="warn" id="sizeWarn" hidden></p>
-    </div>
+        <p class="hint">Only <code>--use-*</code> switches and <code>--ref-image-size match|max</code> are accepted. In Interactive mode they apply when h3.c is loaded.</p>
+      </details>
 
-    <div class="block">
-      <div class="blockhead"><h2>Duration</h2><span class="fpsbadge">24 FPS</span></div>
-      <div class="duration-slider">
-        <input type="range" id="frames" min="0" max="21" value="1">
-        <div class="duration-markers" aria-hidden="true">
-          <span style="left: 33.333%">5</span>
-          <span style="left: 66.667%">10</span>
-          <span style="left: 100%">15</span>
+      <div class="block">
+        <label class="labelfield">Take name<input type="text" id="label" placeholder="shot-01" autocomplete="off"></label>
+        <label class="check"><input type="checkbox" id="previewToggle" checked> Live preview<em>decode &amp; display frames during render — slower</em></label>
+        <div class="radio-group" id="previewModeGroup">
+          <label class="check"><input type="radio" name="previewMode" id="previewModeSingle" value="single" checked> Single frame<em>middle frame of the middle chunk</em></label>
+          <label class="check"><input type="radio" name="previewMode" id="previewModeAll" value="all"> All frames in chunk<em>One-shot only · reveals motion at no extra decode cost</em></label>
         </div>
+        <details class="cmd"><summary>Command</summary><pre id="cmdPreview"></pre></details>
       </div>
-      <div class="readout"><b id="frameCount">22</b> frames<span id="frameSecs">0.92 s</span></div>
-      <p class="hint">H3 converts requests to its legal frame grid: 5 + 17n.</p>
     </div>
 
-    <div class="block">
-      <h2>Quality</h2>
-      <div class="chips" id="qualityPresets"></div>
-      <div class="fields three">
-        <label>Steps<input type="number" id="steps" min="1" max="50" value="4"></label>
-        <label>Layers<input type="number" id="layers" min="20" max="50" value="50"></label>
-        <label>Reuse<input type="number" id="reuse" min="1" max="3" value="1"></label>
+    <!-- sticky render bar -->
+    <div class="renderbar">
+      <div class="runrow">
+        <div class="modeswitch runswitch" id="runModeSwitch" role="radiogroup" aria-label="Run mode">
+          <button data-run="oneshot" type="button" class="on">One-shot</button>
+          <button data-run="interactive" type="button">Interactive</button>
+        </div>
+        <div class="interpill" id="interPill" hidden>
+          <i></i><span id="interText">h3.c not loaded</span>
+          <button class="ghost sm" id="interToggle" type="button">Load h3.c</button>
+        </div>
+        <span class="estimate" id="estimate"></span>
       </div>
-      <label class="check"><input type="checkbox" id="tokenReduction"> Token reduction<em>faster, can shift composition</em></label>
-      <label class="check"><input type="checkbox" id="int8RowFc2"> Fast int8 FC2<em>M5 only</em></label>
-    </div>
-
-    <details class="block">
-      <summary><h2>Environment</h2></summary>
-      <label class="check"><input type="checkbox" id="zeroCopy" checked> Copy weights into memory<em>set this when the model lives on an external drive</em></label>
-      <label class="check"><input type="checkbox" id="ssdStreaming"> Stream DiT from disk<em>cuts memory, much slower over USB</em></label>
-      <div class="fields">
-        <label>Qwen prefetch depth<input type="number" id="prefetchDepth" min="1" max="6" placeholder="default"></label>
-        <label>Prefetch workers<input type="number" id="prefetchWorkers" min="1" max="8" placeholder="default"></label>
-      </div>
-    </details>
-
-    <div class="block">
-      <label class="labelfield">Take name<input type="text" id="label" placeholder="shot-01"></label>
-      <label class="check"><input type="checkbox" id="previewToggle" checked> Live preview<em>decode &amp; display frames during render — slower</em></label>
-      <div class="radio-group" id="previewModeGroup">
-        <label class="check"><input type="radio" name="previewMode" id="previewModeSingle" value="single" checked> Single frame<em>middle frame of the middle chunk</em></label>
-        <label class="check"><input type="radio" name="previewMode" id="previewModeAll" value="all"> All frames in chunk<em>reveals motion at no extra decode cost</em></label>
-      </div>
-      <div class="group-divider">Render</div>
       <div class="actions render-actions">
-        <label class="runmode">Mode
-          <select id="runMode">
-            <option value="oneshot">One-shot</option>
-            <option value="interactive">Interactive</option>
-          </select>
-        </label>
-        <button class="go" id="render">Render</button>
-        <button class="ghost" id="queueBtn">Queue 3 seeds</button>
-      </div>
-      <div class="group-divider">Interactive</div>
-      <div class="actions interactive-actions">
-        <button class="ghost" id="loadH3">Load h3.c</button>
-        <button class="ghost" id="sendH3" disabled>Send to h3.c</button>
+        <button class="go" id="render" type="button">Render <kbd>⌘↵</kbd></button>
+        <button class="ghost" id="queueBtn" type="button" title="Queue the same setup with three random seeds (⇧⌘↵)">Queue 3 seeds</button>
       </div>
       <p class="errors" id="errors" hidden></p>
-      <details class="cmd"><summary>Command</summary><pre id="cmdPreview"></pre></details>
     </div>
   </section>
 
   <!-- ─────────────────────────────── stage ─────────────────────────────── -->
   <section class="pane stage">
-    <div class="viewer">
-      <img id="previewImg" class="preview-img" hidden />
-      <video id="player" controls playsinline preload="auto"></video>
-      <div id="previewBadge" class="preview-badge" hidden>Preview</div>
-      <div class="empty" id="viewerEmpty">
-        <p>No take selected</p>
-        <span>Render something, or pick from the takes on the right.</span>
+    <div class="viewer" id="viewer">
+      <div class="viewer-media">
+        <video id="player" controls playsinline preload="metadata"></video>
+        <div class="preview-frame" id="previewFrame" hidden>
+          <img id="previewImg" alt="Live preview of the render in progress">
+          <div id="previewBadge" class="preview-badge"></div>
+        </div>
+        <div class="empty" id="viewerEmpty">
+          <p>No take selected</p>
+          <span>Render something, or pick from the takes on the right.</span>
+        </div>
+        <div class="compare" id="compare" hidden></div>
       </div>
+      <div class="preview-scrub" id="previewScrub" hidden>
+        <input type="range" id="previewSlider" min="0" max="0" value="0" aria-label="Preview">
+        <span id="previewScrubLabel"></span>
+        <button class="ghost sm" id="previewClose" type="button">Back to video</button>
+      </div>
+      <div class="viewer-caption" id="viewerCaption" hidden></div>
     </div>
 
     <div class="running" id="running" hidden>
+      <ol class="stepper" id="stepper"></ol>
       <div class="phase"><span id="phaseName">starting</span><b id="phasePct"></b></div>
       <div class="track"><i id="phaseBar"></i></div>
-      <div class="elapsed" id="elapsed"></div>
-      <button class="ghost sm" id="cancel">Stop</button>
+      <div class="elapsed"><span id="elapsed"></span><span id="eta"></span></div>
+      <div class="actions running-actions">
+        <button class="ghost sm" id="cancel" type="button">Stop</button>
+        <button class="ghost sm" id="followPreviewBtn" type="button" hidden>Show live preview</button>
+      </div>
     </div>
 
     <div class="queue" id="queueWrap" hidden>
@@ -257,86 +250,94 @@
     </div>
 
     <div class="console" id="consoleContainer">
+      <div class="resize-handle" id="resizeHandle" title="Drag to resize terminal"></div>
       <div class="conhead">
         <h2>Terminal</h2>
-        <div class="tabs"><button class="on" data-tab="log">Output</button><button data-tab="profile">Timing</button></div>
-        <button class="ghost sm resize-btn" id="resizeBtn" title="Resize terminal">↕</button>
+        <div class="tabs" id="consoleTabs" role="tablist">
+          <button class="on" data-tab="log" type="button" role="tab">Output</button>
+          <button data-tab="profile" type="button" role="tab">Timing</button>
+        </div>
+        <div class="conactions">
+          <label class="check inline"><input type="checkbox" id="followLog" checked> follow</label>
+          <button class="ghost sm" id="clearLog" type="button">Clear</button>
+        </div>
       </div>
-      <div class="resize-handle" id="resizeHandle" title="Drag to resize terminal"></div>
       <pre id="terminalOutput"></pre>
-      <form class="terminalform" id="terminalForm">
-        <span class="terminalprompt">$</span>
-        <input id="terminalCommand" type="text" autocomplete="off" spellcheck="false" placeholder="Run a command in the h3 work directory">
-        <button class="ghost sm" type="submit">Run</button>
-      </form>
-      <form class="terminalform interactiveform" id="interactiveForm">
+      <div id="profile" hidden>
+        <div class="timing-chart" id="timingChart"></div>
+        <table id="profileTable"><tbody></tbody></table>
+      </div>
+      <form class="terminalform interactiveform" id="interactiveForm" hidden>
         <span class="terminalprompt">h3&gt;</span>
-        <input id="interactiveInput" type="text" autocomplete="off" spellcheck="false"
-               placeholder="Interactive command or prompt">
+        <input id="interactiveInput" type="text" autocomplete="off" spellcheck="false" placeholder="Interactive command or prompt" aria-label="Interactive h3 input">
         <button class="ghost sm" type="submit">Send</button>
       </form>
-      <table id="profile" hidden><tbody></tbody></table>
+      <form class="terminalform" id="terminalForm" hidden>
+        <span class="terminalprompt">$</span>
+        <input id="terminalCommand" type="text" autocomplete="off" spellcheck="false" placeholder="Run a command in the h3 work directory" aria-label="Shell command">
+        <button class="ghost sm" type="submit">Run</button>
+      </form>
     </div>
   </section>
 
   <!-- ─────────────────────────────── takes ─────────────────────────────── -->
   <section class="pane takes">
-    <div class="takes-half">
-      <div class="blockhead sticky">
-        <h2>Takes</h2>
-        <span class="count" id="takeCount"></span>
+    <div class="sidetabs" role="tablist">
+      <button class="on" data-side="takes" type="button" role="tab">Takes <span class="count" id="takeCount"></span></button>
+      <button data-side="timeline" type="button" role="tab">Timeline <span class="count" id="timelineCount"></span></button>
+    </div>
+    <div class="sidepanel" id="takesPanel">
+      <div class="sidebar-tools">
+        <label class="check inline"><input type="checkbox" id="starFilter"> ★ starred only</label>
+        <div class="comparebar" id="compareBar" hidden>
+          <span id="compareCount"></span>
+          <button class="ghost sm" id="compareGrid" type="button">Grid</button>
+          <button class="ghost sm" id="compareWipe" type="button">A/B wipe</button>
+          <button class="ghost sm" id="compareClear" type="button">Clear</button>
+        </div>
       </div>
       <ul class="takelist" id="takes"></ul>
     </div>
-    <div class="timeline-half">
-      <div class="blockhead sticky">
-        <h2>Timeline</h2>
-        <span class="count" id="timelineCount"></span>
-      </div>
-      <ul class="timelist" id="timelineList"></ul>
+    <div class="sidepanel" id="timelinePanel" hidden>
+      <ul class="takelist" id="timelineList"></ul>
     </div>
   </section>
 
 </main>
 
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
 <div class="modal" id="sessionModal" hidden>
   <div class="modalcard" role="dialog" aria-modal="true" aria-labelledby="sessionModalTitle">
     <h2 id="sessionModalTitle">New session</h2>
     <label>Session name
-      <input id="newSessionName" type="text" placeholder="session-2" autocomplete="off">
+      <input id="sessionNameInput" type="text" placeholder="session-2" autocomplete="off">
     </label>
     <p class="errors" id="sessionError" hidden></p>
     <div class="modalactions">
       <button class="ghost" id="cancelSession" type="button">Cancel</button>
-      <button class="go" id="createSession" type="button">Create</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal" id="h3Modal" hidden>
-  <div class="modalcard" role="dialog" aria-modal="true" aria-labelledby="h3ModalTitle">
-    <h2 id="h3ModalTitle">Choose h3 path</h2>
-    <label>h3 executable
-      <input id="h3PathInput" type="text" placeholder="/path/to/h3" autocomplete="off">
-    </label>
-    <p class="errors" id="h3Error" hidden></p>
-    <div class="modalactions">
-      <button class="ghost" id="cancelH3" type="button">Cancel</button>
-      <button class="go" id="saveH3Path" type="button">Use path</button>
+      <button class="go" id="confirmSession" type="button">Create</button>
     </div>
   </div>
 </div>
 
 <div class="modal" id="modelModal" hidden>
-  <div class="modalcard" role="dialog" aria-modal="true" aria-labelledby="modelModalTitle">
-    <h2 id="modelModalTitle">Choose model path</h2>
+  <div class="modalcard wide" role="dialog" aria-modal="true" aria-labelledby="modelModalTitle">
+    <h2 id="modelModalTitle">Model &amp; setup</h2>
+    <ul class="checks" id="modelChecks"></ul>
     <label>MiniMax-H3 directory
-      <input id="modelPathInput" type="text" placeholder="/path/to/MiniMax-H3" autocomplete="off">
+      <input id="modelPathInput" type="text" placeholder="/path/to/MiniMax-H3" autocomplete="off" spellcheck="false">
     </label>
+    <label id="h3PathField" hidden>h3 executable
+      <input id="h3PathInput" type="text" placeholder="/path/to/h3" autocomplete="off" spellcheck="false">
+    </label>
+    <p class="hint" id="h3PathHint">The h3 binary is set with <code>--h3</code> when starting h3 studio.</p>
     <p class="errors" id="modelError" hidden></p>
     <div class="modalactions">
-      <button class="ghost" id="cancelModel" type="button">Cancel</button>
-      <button class="go" id="saveModel" type="button">Use path</button>
+      <button class="ghost" id="recheckModel" type="button">Recheck</button>
+      <span class="spacer"></span>
+      <button class="ghost" id="cancelModel" type="button">Close</button>
+      <button class="go" id="saveModel" type="button">Use paths</button>
     </div>
   </div>
 </div>
@@ -351,30 +352,28 @@
 
     <div class="timeline-editor-body">
       <div class="timeline-browser">
-        <div class="timeline-dropzone" id="timelineDropzone">
-          <p>Select clips from a session directory below — click to add to the queue</p>
+        <div class="timeline-dropzone">
+          <p>Click a clip to add it to the queue — a clip can be added more than once</p>
         </div>
         <div class="timeline-browser-list" id="timelineBrowserList"></div>
       </div>
 
       <div class="timeline-queue">
         <div class="timeline-queue-head">
-          <h3>Queue</h3>
+          <h3>Queue <span class="count" id="timelineQueueTotal"></span></h3>
           <button class="ghost sm" id="clearTimeline" type="button">Clear</button>
         </div>
-        <div class="timeline-preview" id="timelinePreview">
+        <div class="timeline-preview">
           <div class="timeline-placeholder" id="timelinePlaceholder">
             <p>No clips yet — pick videos on the left to build the queue</p>
           </div>
-          <div class="timeline-track" id="timelineTrack">
-            <!-- Timeline items will be added here -->
-          </div>
+          <div class="timeline-track" id="timelineTrack"></div>
         </div>
       </div>
 
       <div class="timeline-review">
         <h3>Combined result</h3>
-        <div class="timeline-review-player" id="timelineReviewPlayer">
+        <div class="timeline-review-player">
           <video id="timelineReviewVideo" controls playsinline></video>
           <div class="timeline-review-empty" id="timelineReviewEmpty">
             <p>Combine the queued clips to review the result here.</p>
@@ -384,14 +383,20 @@
           <label class="timeline-name">Output name
             <input type="text" id="timelineOutputName" placeholder="timeline-01" autocomplete="off">
           </label>
-          <button class="go sm" id="renderTimeline" type="button">Combine</button>
+          <button class="go sm" id="renderTimeline" type="button" disabled>Combine</button>
         </div>
         <span class="hint" id="timelineRenderStatus"></span>
+        <p class="hint">Clips are letterboxed onto the largest size, resampled to 24 fps, and silent clips get a silent audio track. Sources are never modified.</p>
       </div>
     </div>
   </div>
 </div>
 
+<script src="/static/util.js"></script>
+<script src="/static/canvas.js"></script>
+<script src="/static/prompt.js"></script>
+<script src="/static/takes.js"></script>
+<script src="/static/timeline.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

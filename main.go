@@ -2,130 +2,159 @@ package main
 
 import (
 	"context"
+	"embed"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"h3studio/server"
-
-	"github.com/fsnotify/fsnotify"
 )
 
+//go:embed static
+var embeddedStatic embed.FS
+
 func main() {
-	h3 := flag.String("h3", "", "path to the h3 binary")
-	model := flag.String("model", "", "path to the MiniMax-H3 directory")
-	port := flag.Int("port", 8710, "port")
-	host := flag.String("host", "127.0.0.1", "host")
-	dev := flag.Bool("dev", false, "enable hot reload (dev mode)")
+	h3 := flag.String("h3", "", "path to the h3 binary (env H3STUDIO_H3; defaults to the last one used)")
+	model := flag.String("model", "", "path to the MiniMax-H3 directory (env H3STUDIO_MODEL; defaults to the last one used)")
+	host := flag.String("host", "127.0.0.1", "bind address")
+	port := flag.Int("port", 8710, "bind port")
+	dev := flag.Bool("dev", false, "serve static/ from disk without caching, for front-end work")
+	allowShell := flag.Bool("allow-shell", false, "enable the shell terminal and changing the h3 binary from the browser")
+	allowHosts := flag.String("allow-host", "", "comma-separated extra Host names to accept (IP addresses and localhost are always accepted)")
+	root := flag.String("root", "", "directory holding sessions/ (default: next to the binary, or the current directory)")
 	flag.Parse()
-	if *h3 == "" || *model == "" {
+
+	rootDir := *root
+	if rootDir == "" {
+		rootDir = discoverRoot()
+	}
+	h3Path := firstNonEmpty(*h3, os.Getenv("H3STUDIO_H3"), server.SavedPath(rootDir, "h3.json", "h3"))
+	modelPath := firstNonEmpty(*model, os.Getenv("H3STUDIO_MODEL"), server.SavedPath(rootDir, "model.json", "model"))
+	if h3Path == "" || modelPath == "" {
+		fmt.Fprintln(os.Stderr, "h3 studio needs --h3 and --model the first time it runs.")
 		flag.Usage()
 		os.Exit(2)
 	}
-	cfg, err := server.NewConfig(server.Args{H3: *h3, Model: *model})
+
+	static, err := staticFS(rootDir, *dev)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if !server.FileExists(cfg.H3) {
-		fmt.Fprintf(os.Stderr, "h3 binary not found: %s\n", cfg.H3)
+	cfg, err := server.NewConfig(server.Options{
+		H3: h3Path, Model: modelPath, Root: rootDir, Host: *host, Port: *port,
+		Dev: *dev, AllowShell: *allowShell, AllowedHosts: strings.Split(*allowHosts, ","), Static: static,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if !server.DirExists(cfg.Model) {
-		fmt.Fprintf(os.Stderr, "model directory not found: %s\n", cfg.Model)
+	if !server.FileExists(cfg.H3()) {
+		fmt.Fprintf(os.Stderr, "h3 binary not found: %s\n", cfg.H3())
 		os.Exit(1)
 	}
-	_ = server.WriteJSONFile(cfg.ModelFile, map[string]any{"model": cfg.Model}, true)
-	_ = server.WriteJSONFile(cfg.H3File, map[string]any{"h3": cfg.H3}, true)
-	runner := server.NewRunner(cfg)
-	app := server.NewApp(cfg, runner)
-	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", *host, *port), Handler: app}
+	if !server.DirExists(cfg.Model()) {
+		fmt.Fprintf(os.Stderr, "model directory not found: %s\n", cfg.Model())
+		os.Exit(1)
+	}
+	// Remember the paths so later runs can omit the flags.
+	cfg.SetH3(cfg.H3())
+	cfg.SetModel(cfg.Model())
 
-	// Start file watcher for hot reload (dev only)
+	events := server.NewBroker()
+	runner := server.NewRunner(cfg, events)
+	srv := &http.Server{
+		Addr:              cfg.Addr(),
+		Handler:           server.NewApp(cfg, runner, events),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	fmt.Printf("h3 studio  →  http://%s\n", cfg.Addr())
+	fmt.Printf("  binary    %s\n", cfg.H3())
+	fmt.Printf("  model     %s\n", cfg.Model())
+	fmt.Printf("  sessions  %s\n", cfg.Sessions)
 	if *dev {
-		watcher, err := startFileWatcher(cfg.Static, runner)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: file watcher failed to start: %v\n", err)
-		} else {
-			defer watcher.Close()
-			fmt.Println("  File watcher: enabled (static files will auto-reload)")
-		}
-	} else {
-		fmt.Println("  File watcher: disabled (use --dev to enable)")
+		fmt.Println("  static    served from disk (dev)")
 	}
-
-	fmt.Printf("h3 studio  →  http://%s:%d\n", *host, *port)
-	fmt.Printf("  binary   %s\n", cfg.H3)
-	fmt.Printf("  model    %s\n", cfg.Model)
-	fmt.Printf("  input    %s\n", cfg.CurrentInputs())
-	fmt.Printf("  outputs  %s\n", cfg.CurrentOutputs())
+	if cfg.FFmpeg == "" || cfg.FFprobe == "" {
+		fmt.Println("  warning   ffmpeg/ffprobe not found — frame extraction, thumbnails and the timeline won't work")
+	}
+	if ip := net.ParseIP(*host); !(*host == "localhost" || (ip != nil && ip.IsLoopback())) {
+		fmt.Println("  warning   no authentication — anyone who can reach this port can run renders")
+	}
+	if *allowShell {
+		fmt.Println("  warning   --allow-shell: the browser can run shell commands in the h3 work directory")
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	select {
-	case sig := <-sigCh:
-		if sig != nil {
-			fmt.Println("\nstopped")
-		}
+	case <-sigCh:
+		fmt.Println("\nstopping")
 	case err := <-errCh:
 		fmt.Fprintln(os.Stderr, err)
 	}
-	runner.StopInteractive()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+	runner.Shutdown()
 }
 
-// startFileWatcher watches the static directory for changes and triggers a reload
-func startFileWatcher(staticDir string, runner *server.Runner) (*fsnotify.Watcher, error) {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, err
+// discoverRoot finds the directory that holds sessions/: next to the binary,
+// its parent (dist/h3studio), or the current directory.
+func discoverRoot() string {
+	candidates := []string{}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates, dir, filepath.Dir(dir))
 	}
-
-	// Add the static directory to watch
-	if err := watcher.Add(staticDir); err != nil {
-		watcher.Close()
-		return nil, err
+	cwd, err := os.Getwd()
+	if err == nil {
+		candidates = append(candidates, cwd)
 	}
-
-	// Watch for changes in static files
-	go func() {
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				// Only reload on write events (create, write, remove)
-				if event.Op&fsnotify.Write == fsnotify.Write ||
-					event.Op&fsnotify.Create == fsnotify.Create ||
-					event.Op&fsnotify.Remove == fsnotify.Remove {
-					// Check if it's a static file
-					if filepath.Ext(event.Name) != "" {
-						fmt.Printf("  [Hot Reload] %s changed - reloading...\n", event.Name)
-						runner.ReloadClients()
-					}
-				}
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				fmt.Fprintf(os.Stderr, "File watcher error: %v\n", err)
-			}
+	for _, dir := range candidates {
+		if server.DirExists(filepath.Join(dir, "sessions")) || server.FileExists(filepath.Join(dir, "go.mod")) {
+			return dir
 		}
-	}()
+	}
+	if cwd != "" {
+		return cwd
+	}
+	return "."
+}
 
-	return watcher, nil
+// staticFS serves the embedded UI, or static/ from disk in dev mode.
+func staticFS(root string, dev bool) (fs.FS, error) {
+	if dev {
+		dir := filepath.Join(root, "static")
+		if !server.FileExists(filepath.Join(dir, "index.html")) {
+			return nil, fmt.Errorf("--dev needs %s/index.html", dir)
+		}
+		return os.DirFS(dir), nil
+	}
+	return fs.Sub(embeddedStatic, "static")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

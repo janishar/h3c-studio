@@ -4,7 +4,7 @@
 MiniMax-H3 video/audio inference on Apple Silicon.
 
 h3 studio is a Go stdlib-only web server (no JS build step, no third-party Go
-dependency besides `fsnotify`) that drives the `h3` binary: it builds the CLI
+dependencies) that drives the `h3` binary: it builds the CLI
 arguments, runs one-shot or interactive sessions, manages references and
 anchors, queues renders, chains shots together, and surfaces live profiling
 output — all from a browser tab, with nothing sent off your machine.
@@ -40,6 +40,7 @@ a Python stack or a node-graph app to get there.
 - [Features](#features)
 - [Sessions and state](#sessions-and-state)
 - [Notes for an external drive](#notes-for-an-external-drive)
+- [Security](#security)
 - [Limits](#limits)
 - [Contributing](#contributing)
 - [License](#license)
@@ -133,6 +134,8 @@ below before running this step.
 GOCACHE=$(pwd)/.gocache go build -o ./dist/h3studio .
 ```
 
+The web UI is embedded in the binary, so `dist/h3studio` runs on its own.
+
 ## Downloading the weights (deduplicated)
 
 `MiniMaxAI/MiniMax-H3` ships two variants, `Ref2VA` and `FL2VA`, which share
@@ -190,65 +193,54 @@ du -sh MiniMax-H3                 # expect ~66 GB
 
 ## Usage
 
-### Development (with hot reload)
+### Running
 
 ```bash
-./dist/h3studio \
-  --h3 ./h3c/h3 \
-  --model /path/to/MiniMax-H3 \
-  --host 127.0.0.1 \
-  --port 8710 \
-  --dev
+./dist/h3studio --h3 ./h3c/h3 --model /path/to/MiniMax-H3
 ```
 
-Open http://127.0.0.1:8710. Hot reload is **enabled** — static files (CSS/JS)
-auto-reload on change. Drop `--dev` to disable it.
+Open http://127.0.0.1:8710. The paths are remembered in `sessions/h3.json` and
+`sessions/model.json`, so later runs can omit them; a flag or environment
+variable always wins over the remembered value.
 
-### Production
+For front-end work, add `--dev` to serve `static/` from disk without caching —
+edit a file and refresh the browser.
 
-```bash
-./dist/h3studio \
-  --h3 ./h3c/h3 \
-  --model /path/to/MiniMax-H3 \
-  --host 0.0.0.0 \
-  --port 8710
-```
-
-Hot reload is disabled by default. **There is no authentication** — see
-[Limits](#limits) before binding to anything other than `127.0.0.1`.
+**There is no authentication** — see [Security](#security) before binding to
+anything other than `127.0.0.1`.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--h3` | *(required)* | Path to the built `h3` binary. |
-| `--model` | *(required)* | Path to the MiniMax-H3 checkpoint directory. |
-| `--host` | `127.0.0.1` | Bind address. |
+| `--h3` | `$H3STUDIO_H3`, else last used | Path to the built `h3` binary. |
+| `--model` | `$H3STUDIO_MODEL`, else last used | Path to the MiniMax-H3 checkpoint directory. |
+| `--host` | `127.0.0.1` | Bind address. A warning is printed for anything but loopback. |
 | `--port` | `8710` | Bind port. |
-| `--dev` | `false` | Enable hot reload of static files. |
+| `--dev` | `false` | Serve `static/` from disk with `Cache-Control: no-store`. |
+| `--allow-shell` | `false` | Enable the `$` shell terminal and changing the h3 binary from the browser. |
+| `--allow-host` | *(none)* | Extra `Host` names to accept (comma-separated). IP addresses and `localhost` are always accepted. |
+| `--root` | next to the binary, or the current directory | Directory holding `sessions/`. |
 
-Choose **One-shot** or **Interactive** mode in the web UI. Interactive h3.c is
-started only after clicking **Load h3.c**, so starting the studio itself never
-loads the model.
+Choose **One-shot** or **Interactive** in the render bar at the bottom of the
+left pane. Interactive h3.c starts when you click **Load h3.c** or send the
+first interactive render, so starting the studio itself never loads the model.
+**⌘/Ctrl+Enter** renders from anywhere; **⇧⌘/Ctrl+Enter** queues three seeds.
 
 ### Run from VS Code
 
-The terminal commands above aren't required — `.vscode/launch.json` ships
-five ready-made configurations for the Go extension's Run & Debug panel
-(`Cmd+Shift+D`, then pick one from the dropdown and press `F5`):
+`.vscode/launch.json` ships ready-made configurations for the Go extension's
+Run & Debug panel (`Cmd+Shift+D`, pick one, `F5`):
 
 | Configuration | What it does |
 | --- | --- |
-| **h3 studio (dev - hot reload)** | Runs from source with `--dev --host 127.0.0.1 --port 8710` — the everyday development config. |
-| **h3 studio (custom paths)** | Same as above, but prompts for the `--h3` and `--model` paths instead of using the hardcoded ones. Use this if your checkpoint isn't at the sample path baked into the other configs. |
-| **h3 studio (debug - source)** | Runs from source with hot reload off, so the file watcher doesn't interfere while stepping through the debugger. |
-| **h3 studio (prod - no hot reload)** | Builds `dist/h3studio` first, then runs it bound to `0.0.0.0:8710` — see [Limits](#limits) before using this one. |
-| **h3 studio (dist build)** | Builds and runs the standalone `dist/h3studio` binary under the debugger, instead of running from source. |
+| **h3 studio (dev - static from disk)** | Runs from source with `--dev` on `127.0.0.1:8710` — the everyday development config. |
+| **h3 studio (custom paths)** | Same, but prompts for the `--h3` and `--model` paths. |
+| **h3 studio (debug - source)** | Runs from source with the embedded UI, for stepping through the server. |
+| **h3 studio (LAN - 0.0.0.0, no auth)** | Binds to all interfaces and prompts for the host name other machines use — see [Security](#security). |
+| **h3 studio (dist build)** | Builds and runs `dist/h3studio` under the debugger. |
 
-All but "custom paths" have `--h3`/`--model` hardcoded to a sample path in
-`.vscode/launch.json` — either edit those two fields to your own `h3c/h3`
-binary and MiniMax-H3 checkpoint directory, or just use "custom paths", which
-prompts for both. Since these are real `go` launch configs (not task
-runners), breakpoints, variable inspection, and the Go debug console all work
-normally.
+All but "custom paths" have `--model` hardcoded to a sample path — edit it in
+`.vscode/launch.json`, or use "custom paths". `.vscode/tasks.json` adds
+**build: h3studio (dist)**, **test: go (race)** and **test: canvas.js (node)**.
 
 ## Features
 
@@ -257,19 +249,34 @@ normally.
 nothing to the model and position is what it reads, getting this wrong
 silently produces the wrong shot.
 
-**Illegal settings are caught before launch.** Canvas dimensions must be
-multiples of 32 and stay under 768×1344; the duration slider only offers the
-5+17n frame grid and shows real seconds; Ref2VA references and first/last
-anchors are mutually exclusive and the mode switch enforces it.
+**Three conditioning modes.** **Prompt** (text only), **Anchors** (first/last
+frame, FL2VA) and **References** (ordered Ref2VA images, clips and audio). Each
+mode keeps its own inputs, and only the active one is sent to h3. References
+are disabled with an explanation when the model has no `Ref2VA/` pipeline.
+
+**Illegal settings are caught before launch.** The server validates every
+render — canvas on the 32-pixel grid and under 768×1344, the 5+17n frame grid,
+reference counts and durations, inputs that actually exist in the session —
+and the same errors show in the render bar as you edit. **Command** shows the
+exact argv (or REPL commands) the server will run, built by the same code that
+runs it.
+
+**Canvas by aspect ratio.** Pick 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3, 21:9,
+**Match input** (follows the first anchor or image reference) or Custom, then
+drag **Megapixels**; the studio solves the closest legal size and shows the
+latent size. A warning appears when an anchor's aspect would be stretched.
 
 **One-shot and interactive rendering.** One-shot spawns a fresh `h3` process
-per render. Interactive mode keeps `h3` resident after **Load h3.c**, so
-repeated **Send to h3.c** renders skip the model load and only pay for
-re-encoding the changed prompt/conditioning.
+per render. Interactive mode keeps `h3` resident, so repeated **Send to h3.c**
+renders skip the model load and only pay for re-encoding the changed
+prompt/conditioning. You can also type commands and prompts at the `h3>`
+console; a queued studio render waits for a manual prompt to finish first, and
+each render's output is tracked in its own directory so the two never get
+mixed up.
 
-**Continue generation from any take.** Every take in the history carries three
-ways to feed itself back into the next render, so a shot can grow out of
-whatever you already generated instead of starting cold:
+**Continue generation from any take.** Every take carries ways to feed
+itself back into the next render, so a shot can grow out of whatever you
+already generated instead of starting cold:
 
 - **Chain →** extracts the take's last frame, switches the form to anchor
   mode, and sets that frame as the *first* frame of the next shot (clearing
@@ -283,8 +290,11 @@ whatever you already generated instead of starting cold:
 - **Use ref** copies the take's whole output video into the session and adds
   it as a `Video N` reference (max 3), for continuing motion/subject
   continuity from the clip itself rather than a single frame.
+- The **⋮** menu adds **First frame → input**, **Use audio** (extracts the
+  soundtrack as an audio reference), **Previews (N)**, **Add to compare**,
+  **Download** and **Delete**.
 
-All three copy the source file into the session's `inputs/` directory first,
+All of these copy the source file into the session's `inputs/` directory first,
 since renders only ever read references from there — takes themselves live in
 `outputs/` and are never read back directly.
 
@@ -323,15 +333,41 @@ Both takes: FL2VA, one-shot mode, combined with the Timeline feature.
 </table>
 
 **Reproducibility.** Every render writes a `.json` sidecar next to the MP4
-with the full parameter set and the exact argv used. "Reuse settings"
-restores a past take into the form. Nothing depends on you remembering what
-you did.
+with the full parameter set, the exact argv, an ffprobe summary, the profile
+and the saved previews. **Reuse** restores a past take into the form and
+**History** in the prompt block brings back earlier prompts. Nothing depends
+on you remembering what you did.
 
-**Queue.** One render at a time — one GPU. "Queue 3 seeds" submits the same
-setup with three random seeds, which is the cheapest way to judge a prompt.
+**Queue and seed comparison.** One render at a time — one GPU. **Queue 3
+seeds** submits the same setup with three random seeds; when they finish, the
+viewer opens a synced grid of the three with a **Keep** (star) button on each.
+Any two takes can also be compared with an **A/B wipe**, and **★ starred
+only** filters the take list.
 
-**Live profile.** The Timing tab parses `--profile` output into per-phase
-wall times, so you can see load cost against denoise cost directly.
+**Progress you can read.** The running card shows a Load → Encode → Denoise
+→ Decode → MP4 stepper, elapsed time and an ETA (measured per denoise step, or
+estimated from this session's earlier takes with the same settings — the same
+estimate shows in the render bar before you start). The tab title shows
+progress, and 🔔 turns on a browser notification when a render finishes.
+Failures pop up with the error and, for known problems (out of memory, the
+macOS GPU watchdog, missing ffmpeg or model files), a hint about what to do.
+
+**Live preview on disk.** With Live preview on, each decoded preview frame is
+written as a PNG under `previews/<job>/` and streamed to the viewer by URL.
+After the take finishes the previews are pruned (every frame of the last step,
+one frame of each earlier step) and **Previews (N)** scrubs through them.
+
+**Live profile.** The Timing tab charts `--profile` wall time per component
+across recent takes (model load separated from compute) and lists the latest
+render's rows.
+
+**Model check.** The **Model** button shows whether `FL2VA/` and `Ref2VA/` are
+present, whether symlinks resolve, the checkpoint size, and whether `h3`,
+`ffmpeg` and `ffprobe` run. The dot next to it turns amber or red when
+something needs attention.
+
+**Keyboard.** ⌘/Ctrl+Enter render · ⇧⌘/Ctrl+Enter queue 3 seeds · Esc close
+dialogs · Space play/pause · ←/→ step one frame · J/K next/previous take.
 
 ## Sessions and state
 
@@ -343,12 +379,18 @@ sessions is instant and each one's disk footprint is only what you put in it.
 ```
 sessions/<name>/
 ├── setting.json     # full UI state: prompt, canvas, quality, refs, anchors, ...
-├── inputs/          # uploads, extracted frames, and takes reused as refs
-└── outputs/         # rendered .mp4 files, each with a .json sidecar
+├── terminal.log     # the session's terminal output
+├── inputs/          # uploads, extracted frames/audio, takes reused as refs
+│                    #   (each with a <name>.json sidecar: original name, probe)
+├── outputs/         # rendered .mp4 takes, each with a .json sidecar
+├── previews/        # live-preview PNGs, one folder per render
+└── timeline/        # combined videos, each with a .json sidecar
 ```
 
-**State** — `setting.json` is written on every render and on a debounced
-auto-save while you edit the form, so a session reopens exactly where you left
+`.thumbs/` folders next to videos hold cached poster images.
+
+**State** — `setting.json` is written atomically on a debounced auto-save
+while you edit the form, so a session reopens exactly where you left
 it: prompt text, canvas size, quality settings, every reference and anchor,
 and which mode you were in.
 
@@ -360,15 +402,18 @@ came from lives in `outputs/`.
 
 **Output** — `outputs/` holds only what `h3` produced: the rendered `.mp4`
 plus a matching `.json` sidecar with the full parameter set and the exact
-argv used for that take (what "Reuse settings" reads from). Takes are read
+argv used for that take (what **Reuse** reads from). The sidecar is the only
+record of a take — deleting the video deletes its sidecar, thumbnail and
+previews too. Takes are read
 from here for playback and for the Timeline, but never read back into a
 render directly — continuing from one always goes through `inputs/` first
 (see [Continue generation from any take](#features) above).
 
 Session bookkeeping lives one level up: the last active session is tracked in
 `sessions/last_session.json` and restored when the web UI starts (creating
-`session-1` if nothing exists yet), and entering an existing session's name in
-the session switcher restores that session's `setting.json` in full.
+`session-1` if nothing exists yet). Every API call names its session, so two
+browser tabs can work in different sessions at once. New, duplicate and delete
+live in the **⋯** menu next to the session switcher.
 
 ## Notes for an external drive
 
@@ -379,22 +424,39 @@ mapping is the faster path on NVMe.
 The Qwen prefetch fields set `H3_QWEN_PREFETCH_DEPTH` and `H3_QWEN_PREFETCH`.
 Defaults assume a 128 GiB machine; raising depth can help hide slow reads.
 
+## Security
+
+h3 studio has no authentication, so it defends the one thing a local tool
+must: other websites and other machines driving it.
+
+- It binds to `127.0.0.1` by default and prints a warning for any other
+  address. Anyone who can reach the port can run renders.
+- Requests whose `Host` header isn't an IP address, `localhost`, the `--host`
+  name or an `--allow-host` name are refused, which blocks DNS rebinding.
+- State-changing requests must come from the studio's own origin and use a
+  JSON content type, so a page you visit can't forge them.
+- The `$` shell terminal and changing the h3 binary from the browser are off
+  unless you pass `--allow-shell`.
+- Only `H3_*` environment variables reach h3, **Extra arguments** only accepts
+  `--use-*` switches and `--ref-image-size`, and render inputs must be plain
+  file names inside the session's `inputs/`.
+
 ## Limits
 
 - One render at a time, deliberately.
-- Stop sends `SIGTERM`, then `SIGKILL` after a short timeout; h3 may take a
-  moment to unwind.
-- Uploads are held in memory before writing, so very large reference videos
-  will be slow to attach.
-- Binds to `127.0.0.1` by default. There is no authentication — don't expose
-  it on an untrusted network.
+- Stop sends `SIGTERM` to h3's process group, then `SIGKILL` after 3 seconds.
+  Stopping an interactive render unloads h3.c.
+- Interactive h3.c accepts image references only; use One-shot for video or
+  audio references.
+- Extra arguments in Interactive mode apply when h3.c is loaded, not per
+  render.
 
 ## Contributing
 
 Contributions are welcome — bug reports, feature requests, and pull requests
 alike. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; it
 covers what you need running locally, coding conventions (stdlib-only Go, no
-frontend build step), and how issues involving the `h3.c` engine itself
+frontend build step), the test commands, and how issues involving the `h3.c` engine itself
 should be routed to [its own repository](https://github.com/janishar/h3.c).
 
 ## License

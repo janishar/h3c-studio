@@ -57,7 +57,7 @@
       ]
     },
     {
-      "name": "h3 studio (dev - hot reload)",
+      "name": "h3 studio (dev - static from disk)",
       "type": "go",
       "request": "launch",
       "mode": "auto",
@@ -80,7 +80,7 @@
       ]
     },
     {
-      "name": "h3 studio (prod - no hot reload)",
+      "name": "h3 studio (LAN - 0.0.0.0, no auth)",
       "type": "go",
       "request": "launch",
       "mode": "auto",
@@ -98,12 +98,20 @@
         "--host",
         "0.0.0.0",
         "--port",
-        "8710"
+        "8710",
+        "--allow-host",
+        "${input:lanHost}"
       ],
       "postDebugTask": "build: h3studio (dist)"
     }
   ],
   "inputs": [
+    {
+      "id": "lanHost",
+      "type": "promptString",
+      "description": "Host name other machines use to reach this Mac (IP addresses are always accepted)",
+      "default": "localhost"
+    },
     {
       "id": "h3Path",
       "type": "promptString",

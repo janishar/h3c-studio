@@ -1,71 +1,64 @@
 package server
 
 import (
+	"errors"
+	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
 
+// Options are the resolved command-line settings the server starts with.
+type Options struct {
+	H3           string
+	Model        string
+	Root         string // directory holding sessions/
+	Host         string
+	Port         int
+	Dev          bool
+	AllowShell   bool
+	AllowedHosts []string // extra Host header names accepted besides IP literals and localhost
+	Static       fs.FS
+}
+
 type Config struct {
-	mu            sync.RWMutex
-	Root          string
-	Static        string
-	Sessions      string
-	ModelFile     string
-	H3File        string
-	SettingFile   string
-	FFmpeg        string
-	H3            string
-	Model         string
-	Workdir       string
-	activeSession string
-	inputs        string
-	outputs       string
-	timeline      string
+	mu    sync.RWMutex
+	h3    string
+	model string
+
+	Root         string
+	Sessions     string
+	Host         string
+	Port         int
+	Dev          bool
+	AllowShell   bool
+	allowedHosts map[string]bool
+	Static       fs.FS
+
+	FFmpeg  string
+	FFprobe string
+
+	sessionLocks keyedMutex
 }
 
-type Args struct {
-	H3    string
-	Model string
-}
+// Session subdirectories that the API may read media from.
+var sessionMediaDirs = map[string]bool{"inputs": true, "outputs": true, "timeline": true, "previews": true}
 
-func discoverRoot() (string, string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", "", err
-	}
-	root := filepath.Dir(exe)
-	static := filepath.Join(root, "static")
-	if FileExists(filepath.Join(static, "index.html")) {
-		return root, static, nil
-	}
-	parent := filepath.Dir(root)
-	parentStatic := filepath.Join(parent, "static")
-	if parent != root && FileExists(filepath.Join(parentStatic, "index.html")) {
-		return parent, parentStatic, nil
-	}
-	cwd, err := os.Getwd()
-	if err == nil {
-		cwdStatic := filepath.Join(cwd, "static")
-		if FileExists(filepath.Join(cwdStatic, "index.html")) {
-			return cwd, cwdStatic, nil
-		}
-	}
-	return root, static, nil
-}
-
-func NewConfig(args Args) (*Config, error) {
-	root, statik, err := discoverRoot()
+func NewConfig(opts Options) (*Config, error) {
+	h3, err := filepath.Abs(expandHome(opts.H3))
 	if err != nil {
 		return nil, err
 	}
-	h3, err := filepath.Abs(args.H3)
+	model, err := filepath.Abs(expandHome(opts.Model))
 	if err != nil {
 		return nil, err
 	}
-	model, err := filepath.Abs(args.Model)
+	root, err := filepath.Abs(opts.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -74,216 +67,260 @@ func NewConfig(args Args) (*Config, error) {
 		return nil, err
 	}
 	cfg := &Config{
-		Root:        root,
-		Static:      statik,
-		Sessions:    sessions,
-		ModelFile:   filepath.Join(sessions, "model.json"),
-		H3File:      filepath.Join(sessions, "h3.json"),
-		SettingFile: filepath.Join(sessions, "last_session.json"),
-		H3:          h3,
-		Model:       model,
-		Workdir:     filepath.Dir(h3),
+		h3:           h3,
+		model:        model,
+		Root:         root,
+		Sessions:     sessions,
+		Host:         opts.Host,
+		Port:         opts.Port,
+		Dev:          opts.Dev,
+		AllowShell:   opts.AllowShell,
+		allowedHosts: map[string]bool{"localhost": true},
+		Static:       opts.Static,
+		FFmpeg:       toolPath("H3_FFMPEG", "ffmpeg"),
+		FFprobe:      toolPath("H3_FFPROBE", "ffprobe"),
 	}
-	if saved, ok := readStringField(cfg.H3File, "h3"); ok {
-		if abs, err := filepath.Abs(expandHome(saved)); err == nil {
-			cfg.H3 = abs
-			cfg.Workdir = filepath.Dir(abs)
+	for _, host := range opts.AllowedHosts {
+		if host = strings.ToLower(strings.TrimSpace(host)); host != "" {
+			cfg.allowedHosts[host] = true
 		}
 	}
-	if saved, ok := readStringField(cfg.ModelFile, "model"); ok {
-		if abs, err := filepath.Abs(expandHome(saved)); err == nil {
-			cfg.Model = abs
-		}
+	if host := strings.ToLower(opts.Host); host != "" && net.ParseIP(host) == nil {
+		cfg.allowedHosts[host] = true
 	}
-	cfg.activeSession = cfg.loadLastSession()
-	if _, _, err := cfg.ActivateSession(cfg.activeSession); err != nil {
+	if _, err := cfg.EnsureSession(cfg.LastSession()); err != nil {
 		return nil, err
-	}
-	setting := cfg.SessionSetting(cfg.activeSession)
-	current := readJSONObject(setting)
-	defaults := defaultSessionSettings(cfg.activeSession)
-	for k, v := range current {
-		defaults[k] = v
-	}
-	if _, ok := defaults["takes"].([]any); !ok {
-		defaults["takes"] = []any{}
-	}
-	if err := WriteJSONFile(setting, defaults, true); err != nil {
-		return nil, err
-	}
-	if found, err := exec.LookPath("ffmpeg"); err == nil {
-		cfg.FFmpeg = found
-	} else {
-		cfg.FFmpeg = "ffmpeg"
 	}
 	return cfg, nil
 }
 
-func (c *Config) loadLastSession() string {
-	source := c.SettingFile
-	legacy := filepath.Join(c.Sessions, "setting.json")
-	if !FileExists(source) && FileExists(legacy) {
-		source = legacy
+// toolPath resolves an external tool from its override env var, then PATH.
+// An empty result means the tool isn't available.
+func toolPath(envName, name string) string {
+	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+		return value
 	}
-	legacy = filepath.Join(c.Sessions, "setting.cnf")
-	if !FileExists(source) && FileExists(legacy) {
-		source = legacy
+	if found, err := exec.LookPath(name); err == nil {
+		return found
 	}
-	if data := readJSONObject(source); len(data) > 0 {
-		raw := stringsTrimSpace(anyToString(data["last_session"]))
-		if raw != "" {
-			name := safeStem(raw)
-			if DirExists(filepath.Join(c.Sessions, name)) {
+	return ""
+}
+
+func (c *Config) H3() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.h3
+}
+
+func (c *Config) Model() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.model
+}
+
+func (c *Config) Workdir() string { return filepath.Dir(c.H3()) }
+
+func (c *Config) SetH3(path string) {
+	c.mu.Lock()
+	c.h3 = path
+	c.mu.Unlock()
+	_ = writeJSONAtomic(filepath.Join(c.Sessions, "h3.json"), map[string]any{"h3": path})
+}
+
+func (c *Config) SetModel(path string) {
+	c.mu.Lock()
+	c.model = path
+	c.mu.Unlock()
+	_ = writeJSONAtomic(filepath.Join(c.Sessions, "model.json"), map[string]any{"model": path})
+}
+
+// SavedPath reads a path remembered from an earlier run (h3.json / model.json).
+func SavedPath(root, file, field string) string {
+	value, _ := readStringField(filepath.Join(root, "sessions", file), field)
+	return value
+}
+
+// LockSession serializes read-modify-write cycles on one session's files.
+func (c *Config) LockSession(name string) func() { return c.sessionLocks.lock(safeStem(name)) }
+
+// SessionDir returns the directory for a session name without creating it.
+func (c *Config) SessionDir(name string) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", errors.New("session is required")
+	}
+	dir := filepath.Join(c.Sessions, safeStem(name))
+	if filepath.Dir(dir) != c.Sessions {
+		return "", errors.New("invalid session name")
+	}
+	return dir, nil
+}
+
+// EnsureSession creates the session's directory layout and a default
+// setting.json if it doesn't exist yet, and returns the session directory.
+func (c *Config) EnsureSession(name string) (string, error) {
+	dir, err := c.SessionDir(name)
+	if err != nil {
+		return "", err
+	}
+	for _, sub := range []string{"inputs", "outputs", "timeline", "previews"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			return "", err
+		}
+	}
+	setting := filepath.Join(dir, "setting.json")
+	if !FileExists(setting) {
+		if err := writeJSONAtomic(setting, defaultSessionSettings(filepath.Base(dir))); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+// SessionSubdir returns <session>/<sub>, creating the session if needed.
+func (c *Config) SessionSubdir(name, sub string) (string, error) {
+	dir, err := c.EnsureSession(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sub), nil
+}
+
+// MediaPath resolves a path relative to a session directory whose first
+// segment is one of inputs/outputs/timeline/previews, refusing anything that
+// escapes that directory or names a hidden file.
+func (c *Config) MediaPath(session, rel string) (string, error) {
+	dir, err := c.SessionDir(session)
+	if err != nil {
+		return "", err
+	}
+	clean := strings.TrimPrefix(filepath.Clean("/"+filepath.FromSlash(rel)), string(os.PathSeparator))
+	parts := strings.Split(clean, string(os.PathSeparator))
+	if len(parts) < 2 || !sessionMediaDirs[parts[0]] {
+		return "", errors.New("invalid media path")
+	}
+	for _, part := range parts {
+		if part == "" || strings.HasPrefix(part, ".") {
+			return "", errors.New("invalid media path")
+		}
+	}
+	return filepath.Join(dir, clean), nil
+}
+
+// InputPath resolves a bare file name inside a session's inputs directory.
+func (c *Config) InputPath(session, name string) (string, error) {
+	if name == "" || name != filepath.Base(name) || strings.HasPrefix(name, ".") {
+		return "", errors.New("invalid input name: " + name)
+	}
+	return c.MediaPath(session, "inputs/"+name)
+}
+
+// ResolveSessionsPath cleans a path relative to the sessions root and checks
+// that it doesn't escape it. rel == "" or "." resolves to the root itself.
+func (c *Config) ResolveSessionsPath(rel string) (string, error) {
+	clean := strings.TrimPrefix(filepath.Clean("/"+filepath.FromSlash(rel)), string(os.PathSeparator))
+	if clean == "" || clean == "." {
+		return c.Sessions, nil
+	}
+	for _, part := range strings.Split(clean, string(os.PathSeparator)) {
+		if strings.HasPrefix(part, ".") {
+			return "", errors.New("path escapes sessions directory")
+		}
+	}
+	abs := filepath.Join(c.Sessions, clean)
+	if abs != c.Sessions && !strings.HasPrefix(abs, c.Sessions+string(os.PathSeparator)) {
+		return "", errors.New("path escapes sessions directory")
+	}
+	return abs, nil
+}
+
+func (c *Config) relSessionsPath(abs string) string {
+	rel, err := filepath.Rel(c.Sessions, abs)
+	if err != nil {
+		return filepath.Base(abs)
+	}
+	return filepath.ToSlash(rel)
+}
+
+// ListSessions returns the names of session directories, sorted.
+func (c *Config) ListSessions() []string {
+	entries, err := os.ReadDir(c.Sessions)
+	if err != nil {
+		return []string{}
+	}
+	names := []string{}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		root := filepath.Join(c.Sessions, entry.Name())
+		if FileExists(filepath.Join(root, "setting.json")) || DirExists(filepath.Join(root, "outputs")) {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// LastSession is the session the UI opens on start: the one recorded in
+// last_session.json if it still exists, else the first existing, else session-1.
+func (c *Config) LastSession() string {
+	for _, file := range []string{"last_session.json", "setting.json"} {
+		data := readJSONObject(filepath.Join(c.Sessions, file))
+		if raw, _ := data["last_session"].(string); strings.TrimSpace(raw) != "" {
+			if name := safeStem(raw); DirExists(filepath.Join(c.Sessions, name)) {
 				return name
 			}
 		}
 	}
-	entries, err := os.ReadDir(c.Sessions)
-	if err == nil {
-		var existing []string
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			root := filepath.Join(c.Sessions, entry.Name())
-			if DirExists(filepath.Join(root, "inputs")) && DirExists(filepath.Join(root, "outputs")) {
-				existing = append(existing, entry.Name())
-			}
-		}
-		sort.Strings(existing)
-		if len(existing) > 0 {
-			return existing[0]
-		}
+	if names := c.ListSessions(); len(names) > 0 {
+		return names[0]
 	}
 	return "session-1"
 }
 
-func (c *Config) ActivateSession(name string) (string, string, error) {
-	if stringsTrimSpace(name) == "" {
-		name = "session-1"
-	}
-	session := safeStem(name)
-	root := filepath.Join(c.Sessions, session)
-	inputs := filepath.Join(root, "inputs")
-	outputs := filepath.Join(root, "outputs")
-	timeline := filepath.Join(root, "timeline")
-	if err := os.MkdirAll(inputs, 0o755); err != nil {
-		return "", "", err
-	}
-	if err := os.MkdirAll(outputs, 0o755); err != nil {
-		return "", "", err
-	}
-	if err := os.MkdirAll(timeline, 0o755); err != nil {
-		return "", "", err
-	}
-	c.mu.Lock()
-	c.activeSession = session
-	c.inputs = inputs
-	c.outputs = outputs
-	c.timeline = timeline
-	c.mu.Unlock()
-	if err := WriteJSONFile(c.SettingFile, map[string]any{"last_session": session}, true); err != nil {
-		return "", "", err
-	}
-	setting := c.SessionSetting(session)
-	if !FileExists(setting) {
-		if err := WriteJSONFile(setting, defaultSessionSettings(session), true); err != nil {
-			return "", "", err
-		}
-	}
-	// Clear terminal log when switching to a different session
-	if c.activeSession != session {
-		terminalLogPath := c.TerminalLog("")
-		if FileExists(terminalLogPath) {
-			if err := os.WriteFile(terminalLogPath, []byte{}, 0o644); err != nil {
-				return "", "", err
-			}
-		}
-	}
-	// Create empty terminal log for the new session
-	terminalLogPath := c.TerminalLog(session)
-	if err := ensureFile(terminalLogPath); err != nil {
-		return "", "", err
-	}
-	return inputs, outputs, nil
+func (c *Config) SetLastSession(name string) error {
+	return writeJSONAtomic(filepath.Join(c.Sessions, "last_session.json"), map[string]any{"last_session": safeStem(name)})
 }
 
-func (c *Config) SessionSetting(name string) string {
-	if stringsTrimSpace(name) == "" {
-		name = "session-1"
+// hostAllowed reports whether a request's Host header names this server:
+// an IP literal, localhost, the configured --host name or an --allow-host
+// name. Other names are refused so DNS rebinding can't reach the API.
+func (c *Config) hostAllowed(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
 	}
-	session := safeStem(name)
-	root := filepath.Join(c.Sessions, session)
-	_ = os.MkdirAll(root, 0o755)
-	return filepath.Join(root, "setting.json")
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	return c.allowedHosts[host]
 }
 
-func (c *Config) SessionDirs(name string) (string, string, error) {
-	if stringsTrimSpace(name) == "" {
-		name = "default"
-	}
-	session := safeStem(name)
-	root := filepath.Join(c.Sessions, session)
-	inputs := filepath.Join(root, "inputs")
-	outputs := filepath.Join(root, "outputs")
-	if err := os.MkdirAll(inputs, 0o755); err != nil {
-		return "", "", err
-	}
-	if err := os.MkdirAll(outputs, 0o755); err != nil {
-		return "", "", err
-	}
-	return inputs, outputs, nil
-}
+func (c *Config) Addr() string { return net.JoinHostPort(c.Host, strconv.Itoa(c.Port)) }
 
-func (c *Config) TerminalLog(name string) string {
-	c.mu.RLock()
-	active := c.activeSession
-	c.mu.RUnlock()
-	if stringsTrimSpace(name) == "" {
-		name = active
+func defaultSessionSettings(name string) map[string]any {
+	return map[string]any{
+		"session_name":    safeStem(name),
+		"label":           "",
+		"prompt":          "",
+		"prompt_doc":      []any{map[string]any{"type": "text", "value": ""}},
+		"mode":            "ref",
+		"width":           512,
+		"height":          512,
+		"frames":          22,
+		"steps":           4,
+		"layers":          50,
+		"reuse":           1,
+		"seed":            42,
+		"run_mode":        "oneshot",
+		"token_reduction": false,
+		"int8_row_fc2":    false,
+		"ssd_streaming":   false,
+		"refs":            []any{},
+		"env":             map[string]any{"H3_ZERO_COPY_WEIGHTS": "0"},
 	}
-	if stringsTrimSpace(name) == "" {
-		name = "session-1"
-	}
-	session := safeStem(name)
-	path := filepath.Join(c.Sessions, session, "terminal.log")
-	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	return path
-}
-
-func (c *Config) Snapshot() map[string]string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return map[string]string{
-		"h3":      c.H3,
-		"model":   c.Model,
-		"workdir": c.Workdir,
-		"inputs":  c.inputs,
-		"outputs": c.outputs,
-		"session": c.activeSession,
-	}
-}
-
-func (c *Config) CurrentSession() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.activeSession
-}
-
-func (c *Config) CurrentInputs() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.inputs
-}
-
-func (c *Config) CurrentOutputs() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.outputs
-}
-
-func (c *Config) CurrentTimeline() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.timeline
 }
