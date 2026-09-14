@@ -1,1197 +1,198 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
+const (
+	tailLines        = 60
+	progressInterval = 250 * time.Millisecond
+	maxFinishedJobs  = 100
+)
+
+// PreviewInfo describes one preview frame written to disk.
+type PreviewInfo struct {
+	ID         string `json:"id"`
+	Session    string `json:"session"`
+	URL        string `json:"url"`
+	Step       int    `json:"step"`
+	Total      int    `json:"total"`
+	FrameIndex int    `json:"frameIndex"`
+	FrameTotal int    `json:"frameTotal"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	Count      int    `json:"count"`
+}
+
+// Job is one queued render. All fields are guarded by mu; read them through
+// Summary().
 type Job struct {
-	ID       string
-	Params   map[string]any
-	Label    string
-	State    string
-	Phase    string
-	Progress []int
-	Log      []string
-	Command  []string
-	Output   *string
-	Error    *string
-	Started  *float64
-	Finished *float64
-	Profile  []map[string]any
+	mu             sync.Mutex
+	ID             string
+	Session        string
+	Label          string
+	Params         RenderParams
+	Raw            map[string]any
+	State          string
+	Phase          string
+	Stage          string
+	Progress       []int
+	Command        []string
+	CommandDisplay string
+	Output         string
+	Error          string
+	Hint           string
+	Started        float64
+	Finished       float64
+	Profile        []ProfileRow
+	PreviewDir     string
+	PreviewCount   int
+	PreviewLatest  *PreviewInfo
+	EstimateS      float64
+	EtaS           float64
+
+	tail            []string
+	cancelRequested bool
+	denoiseT0       time.Time
+	denoiseN0       int
+	lastProgress    time.Time
+	preview         *h3PreviewState
+	marker          chan struct{}
 }
 
-func newJob(params map[string]any) *Job {
-	return &Job{
-		ID:       randomID(),
-		Params:   cloneMap(params),
-		Label:    anyToString(params["label"]),
-		State:    "queued",
-		Phase:    "",
-		Progress: nil,
-		Log:      []string{},
-		Command:  []string{},
-		Profile:  []map[string]any{},
+// JobSummary is the JSON shape of a job for the UI and sidecars.
+type JobSummary struct {
+	ID             string         `json:"id"`
+	Session        string         `json:"session"`
+	Label          string         `json:"label"`
+	State          string         `json:"state"`
+	Phase          string         `json:"phase"`
+	Stage          string         `json:"stage"`
+	Progress       []int          `json:"progress"`
+	Output         string         `json:"output,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	Hint           string         `json:"hint,omitempty"`
+	Started        float64        `json:"started,omitempty"`
+	Finished       float64        `json:"finished,omitempty"`
+	Seed           int64          `json:"seed"`
+	RunMode        string         `json:"run_mode"`
+	Command        []string       `json:"command,omitempty"`
+	CommandDisplay string         `json:"command_display,omitempty"`
+	Profile        []ProfileRow   `json:"profile"`
+	PreviewCount   int            `json:"preview_count"`
+	PreviewLatest  *PreviewInfo   `json:"preview_latest,omitempty"`
+	EstimateS      float64        `json:"estimate_s,omitempty"`
+	EtaS           float64        `json:"eta_s,omitempty"`
+	Params         map[string]any `json:"params,omitempty"`
+}
+
+func (j *Job) Summary(withParams bool) JobSummary {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	s := JobSummary{
+		ID: j.ID, Session: j.Session, Label: j.Label, State: j.State, Phase: j.Phase, Stage: j.Stage,
+		Progress: append([]int(nil), j.Progress...), Output: j.Output, Error: j.Error, Hint: j.Hint,
+		Started: j.Started, Finished: j.Finished, Seed: j.Params.Seed, RunMode: j.Params.RunMode,
+		Command: append([]string(nil), j.Command...), CommandDisplay: j.CommandDisplay,
+		Profile: append([]ProfileRow{}, j.Profile...), PreviewCount: j.PreviewCount,
+		EstimateS: j.EstimateS, EtaS: j.EtaS,
+	}
+	if j.PreviewLatest != nil {
+		latest := *j.PreviewLatest
+		s.PreviewLatest = &latest
+	}
+	if withParams {
+		s.Params = cloneMap(j.Raw)
+	}
+	return s
+}
+
+func (j *Job) set(fn func(j *Job)) {
+	j.mu.Lock()
+	fn(j)
+	j.mu.Unlock()
+}
+
+func (j *Job) previewDir() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.PreviewDir
+}
+
+func (j *Job) state() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.State
+}
+
+type interactiveProc struct {
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	done    chan struct{}
+	session string
+	writeMu sync.Mutex
+}
+
+func (p *interactiveProc) send(line string) error {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	_, err := io.WriteString(p.stdin, line+"\n")
+	return err
+}
+
+func (p *interactiveProc) alive() bool {
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
 	}
 }
 
-func (j *Job) Summary() map[string]any {
-	var output any
-	if j.Output != nil {
-		output = *j.Output
-	}
-	var errValue any
-	if j.Error != nil {
-		errValue = *j.Error
-	}
-	var started any
-	if j.Started != nil {
-		started = *j.Started
-	}
-	var finished any
-	if j.Finished != nil {
-		finished = *j.Finished
-	}
-	log := j.Log
-	if len(log) > 400 {
-		log = log[len(log)-400:]
-	}
-	return map[string]any{
-		"id":       j.ID,
-		"label":    j.Label,
-		"state":    j.State,
-		"phase":    j.Phase,
-		"progress": j.Progress,
-		"output":   output,
-		"error":    errValue,
-		"started":  started,
-		"finished": finished,
-		"params":   j.Params,
-		"command":  j.Command,
-		"log":      log,
-		"profile":  j.Profile,
-	}
-}
-
+// Runner owns the render queue (one job at a time — one GPU), the resident
+// interactive h3 process and the optional shell terminal.
 type Runner struct {
-	cfg *Config
+	cfg    *Config
+	events *Broker
+	logs   *LogSink
 
-	mu        sync.Mutex
-	jobs      map[string]*Job
-	order     []string
-	current   *Job
-	proc      *exec.Cmd
-	listeners []chan string
+	mu      sync.Mutex
+	cond    *sync.Cond
+	jobs    map[string]*Job
+	order   []string
+	pending []string
+	current *Job
+	proc    *exec.Cmd
 
-	queue chan string
+	// imu guards the interactive fields. It is only ever held briefly —
+	// never while waiting on h3 — so status checks never block on a render.
+	imu            sync.Mutex
+	inter          *interactiveProc
+	interJob       *Job
+	manualInFlight int
 
-	interactiveLock  sync.Mutex
-	interactiveProc  *exec.Cmd
-	interactiveIn    io.WriteCloser
-	interactiveDone  chan struct{}
-	interactiveLines chan *string
-
-	terminalLock sync.Mutex
-	terminalProc *exec.Cmd
-
-	reloadMu      sync.Mutex
-	reloadClients map[chan string]bool
+	shellMu   sync.Mutex
+	shellProc *exec.Cmd
 }
 
-func (r *Runner) ReloadClients() {
-	r.reloadMu.Lock()
-	defer r.reloadMu.Unlock()
-	for client := range r.reloadClients {
-		select {
-		case client <- "reload":
-		default:
-		}
-	}
-}
-
-func (r *Runner) SubscribeReload() chan string {
-	r.reloadMu.Lock()
-	defer r.reloadMu.Unlock()
-	if r.reloadClients == nil {
-		r.reloadClients = make(map[chan string]bool)
-	}
-	q := make(chan string, 10)
-	r.reloadClients[q] = true
-	return q
-}
-
-func (r *Runner) UnsubscribeReload(q chan string) {
-	r.reloadMu.Lock()
-	defer r.reloadMu.Unlock()
-	delete(r.reloadClients, q)
-	close(q)
-}
-
-func NewRunner(cfg *Config) *Runner {
-	r := &Runner{
-		cfg:              cfg,
-		jobs:             map[string]*Job{},
-		order:            []string{},
-		listeners:        []chan string{},
-		queue:            make(chan string, 200),
-		interactiveLines: make(chan *string, 1000),
-	}
+func NewRunner(cfg *Config, events *Broker) *Runner {
+	r := &Runner{cfg: cfg, events: events, logs: NewLogSink(cfg), jobs: map[string]*Job{}}
+	r.cond = sync.NewCond(&r.mu)
 	go r.loop()
 	return r
-}
-
-func (r *Runner) Subscribe() chan string {
-	q := make(chan string, 200)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.listeners = append(r.listeners, q)
-	return q
-}
-
-func (r *Runner) Unsubscribe(q chan string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for i, listener := range r.listeners {
-		if listener == q {
-			r.listeners = append(r.listeners[:i], r.listeners[i+1:]...)
-			close(listener)
-			break
-		}
-	}
-}
-
-func (r *Runner) Emit(kind string, payload any) {
-	if kind == "terminal" {
-		if m, ok := payload.(map[string]any); ok {
-			if line := anyToString(m["line"]); line != "" {
-				path := r.cfg.TerminalLog("")
-				f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-				if err == nil {
-					_, _ = f.WriteString(line + "\n")
-					_ = f.Close()
-				}
-			}
-		}
-	}
-	data, _ := json.Marshal(map[string]any{"kind": kind, "payload": payload})
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	alive := r.listeners[:0]
-	for _, listener := range r.listeners {
-		select {
-		case listener <- string(data):
-			alive = append(alive, listener)
-		default:
-			close(listener)
-		}
-	}
-	r.listeners = alive
-}
-
-func (r *Runner) Submit(params map[string]any) *Job {
-	_ = os.WriteFile(r.cfg.TerminalLog(anyToString(params["session_name"])), []byte{}, 0o644)
-	job := newJob(params)
-	r.mu.Lock()
-	r.jobs[job.ID] = job
-	r.order = append(r.order, job.ID)
-	r.mu.Unlock()
-	r.queue <- job.ID
-	r.Emit("queue", r.QueueState())
-	return job
-}
-
-func (r *Runner) Cancel(jobID string) bool {
-	r.mu.Lock()
-	job := r.jobs[jobID]
-	proc := r.proc
-	if job == nil {
-		r.mu.Unlock()
-		return false
-	}
-	if job.State == "queued" {
-		job.State = "cancelled"
-		r.mu.Unlock()
-		r.Emit("queue", r.QueueState())
-		return true
-	}
-	if job.State == "running" && proc != nil && proc.Process != nil {
-		job.State = "cancelling"
-		r.mu.Unlock()
-		go stopProcess(proc)
-		return true
-	}
-	r.mu.Unlock()
-	return false
-}
-
-func stopProcess(proc *exec.Cmd) {
-	if proc == nil || proc.Process == nil {
-		return
-	}
-	_ = syscall.Kill(-proc.Process.Pid, syscall.SIGTERM)
-	done := make(chan struct{})
-	go func() {
-		_, _ = proc.Process.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return
-	case <-time.After(2 * time.Second):
-	}
-	_ = syscall.Kill(-proc.Process.Pid, syscall.SIGKILL)
-}
-
-func (r *Runner) RunTerminal(command string) bool {
-	r.terminalLock.Lock()
-	defer r.terminalLock.Unlock()
-	r.mu.Lock()
-	busy := r.current != nil
-	r.mu.Unlock()
-	if r.terminalProc != nil || busy {
-		return false
-	}
-	go r.runTerminal(command)
-	return true
-}
-
-func (r *Runner) LoadInteractive(params map[string]any) (bool, string) {
-	r.interactiveLock.Lock()
-	defer r.interactiveLock.Unlock()
-	r.normalizeInteractiveStateLocked()
-	if r.interactiveProc != nil {
-		return false, "interactive h3 is already loaded"
-	}
-	name, err := saveSession(r.cfg, params)
-	if err != nil {
-		return false, err.Error()
-	}
-	params["session_name"] = name
-	if _, _, err := r.cfg.ActivateSession(name); err != nil {
-		return false, err.Error()
-	}
-	if err := r.ensureInteractiveLocked(params); err != nil {
-		return false, err.Error()
-	}
-	return true, ""
-}
-
-func (r *Runner) SendInteractive(line string) (bool, string) {
-	text := stringsTrimSpace(line)
-	if text == "" {
-		return false, "input is required"
-	}
-	r.interactiveLock.Lock()
-	defer r.interactiveLock.Unlock()
-	r.normalizeInteractiveStateLocked()
-	r.mu.Lock()
-	busy := r.current != nil
-	r.mu.Unlock()
-	if busy {
-		return false, "interactive h3 is busy rendering"
-	}
-	if r.interactiveProc == nil || r.interactiveIn == nil {
-		return false, "load interactive h3 first"
-	}
-	if err := r.interactiveSendLocked(text); err != nil {
-		r.interactiveProc = nil
-		r.interactiveIn = nil
-		return false, "interactive h3 has exited; load it again"
-	}
-	return true, ""
-}
-
-func (r *Runner) runTerminal(command string) {
-	r.Emit("terminal", map[string]any{"running": true})
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		r.Emit("terminal", map[string]any{"line": err.Error(), "running": false})
-		return
-	}
-	cmd := exec.Command("/bin/sh", "-c", command)
-	cmd.Dir = r.cfg.Workdir
-	cmd.Stdout = writer
-	cmd.Stderr = writer
-	r.terminalLock.Lock()
-	r.terminalProc = cmd
-	r.terminalLock.Unlock()
-	startErr := cmd.Start()
-	_ = writer.Close()
-	if startErr != nil {
-		_ = reader.Close()
-		r.Emit("terminal", map[string]any{"line": startErr.Error(), "running": false})
-		r.terminalLock.Lock()
-		r.terminalProc = nil
-		r.terminalLock.Unlock()
-		return
-	}
-	buf := bufio.NewScanner(reader)
-	for buf.Scan() {
-		line := stringsTrimSpaceRight(buf.Text())
-		if line != "" {
-			r.Emit("terminal", map[string]any{"line": line, "running": true})
-		}
-	}
-	_ = reader.Close()
-	code := 0
-	if err := cmd.Wait(); err != nil {
-		if exit, ok := err.(*exec.ExitError); ok {
-			code = exit.ExitCode()
-		} else {
-			code = 1
-		}
-	}
-	r.Emit("terminal", map[string]any{"line": fmt.Sprintf("[exit %d]", code), "running": false})
-	r.terminalLock.Lock()
-	r.terminalProc = nil
-	r.terminalLock.Unlock()
-}
-
-func (r *Runner) QueueState() []map[string]any {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := []map[string]any{}
-	for _, id := range r.order {
-		job := r.jobs[id]
-		if job != nil && (job.State == "queued" || job.State == "running") {
-			out = append(out, job.Summary())
-		}
-	}
-	return out
-}
-
-func (r *Runner) History(limit int) []map[string]any {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := []map[string]any{}
-	for i := len(r.order) - 1; i >= 0; i-- {
-		job := r.jobs[r.order[i]]
-		if job == nil {
-			continue
-		}
-		if job.State == "done" || job.State == "failed" || job.State == "cancelled" {
-			out = append(out, job.Summary())
-			if len(out) == limit {
-				break
-			}
-		}
-	}
-	return out
-}
-
-func (r *Runner) loop() {
-	for jobID := range r.queue {
-		r.mu.Lock()
-		job := r.jobs[jobID]
-		if job == nil || job.State == "cancelled" {
-			r.mu.Unlock()
-			continue
-		}
-		r.current = job
-		r.mu.Unlock()
-		func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					msg := fmt.Sprint(rec)
-					job.State = "failed"
-					job.Error = &msg
-				}
-				now := nowSeconds()
-				job.Finished = &now
-				r.mu.Lock()
-				r.current = nil
-				r.proc = nil
-				r.mu.Unlock()
-				recordTake(r.cfg, job)
-				if job.State == "done" {
-					// Persist the exact params that produced a successful take,
-					// as a safety net beyond the client's debounced auto-save.
-					_, _ = saveSession(r.cfg, job.Params)
-				}
-				r.Emit("job", job.Summary())
-				r.Emit("queue", r.QueueState())
-				r.Emit("outputs", listOutputs(r.cfg))
-			}()
-			if anyToString(job.Params["run_mode"]) == "interactive" {
-				r.runInteractive(job)
-			} else {
-				r.run(job)
-			}
-		}()
-	}
-}
-
-func (r *Runner) run(job *Job) {
-	p := job.Params
-	inputs, outputs, err := r.cfg.SessionDirs(anyToString(p["session_name"]))
-	if err != nil {
-		msg := err.Error()
-		job.State = "failed"
-		job.Error = &msg
-		return
-	}
-	stem := safeStem(firstString(anyToString(p["label"]), "take"))
-	name := fmt.Sprintf("%s-%s.mp4", stem, time.Now().Format("0102-150405"))
-	outPath := filepath.Join(outputs, name)
-	cmdArgs := []string{r.cfg.H3, "--profile", "-d", r.cfg.Model, "-p", anyToString(p["prompt"])}
-	if boolFromDefault(p["preview"], true) {
-		cmdArgs = append(cmdArgs, "--show", "--preview-mode", "estimate")
-		if boolFrom(p["previewAllFrames"]) {
-			// h3.c clamps to whatever the middle chunk can actually supply,
-			// so a large sentinel always requests "as many as possible".
-			cmdArgs = append(cmdArgs, "--preview-frames", "999")
-		}
-	}
-	if refs, ok := p["refs"].([]any); ok {
-		for _, raw := range refs {
-			ref, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			path := filepath.Join(inputs, anyToString(ref["name"]))
-			switch {
-			case anyToString(ref["kind"]) == "image":
-				cmdArgs = append(cmdArgs, "--ref-image", path)
-			case anyToString(ref["kind"]) == "audio":
-				cmdArgs = append(cmdArgs, "--ref-audio", path)
-			case anyToString(ref["mode"]) == "silent":
-				cmdArgs = append(cmdArgs, "--ref-silent-video", path)
-			case anyToString(ref["mode"]) == "replace" && anyToString(ref["pairedAudio"]) != "":
-				cmdArgs = append(cmdArgs, "--ref-video-audio", path, filepath.Join(inputs, anyToString(ref["pairedAudio"])))
-			default:
-				cmdArgs = append(cmdArgs, "--ref-video", path)
-			}
-		}
-	}
-	if first := anyToString(p["first_frame"]); first != "" {
-		cmdArgs = append(cmdArgs, "--first-frame", filepath.Join(inputs, first))
-	}
-	if last := anyToString(p["last_frame"]); last != "" {
-		cmdArgs = append(cmdArgs, "--last-frame", filepath.Join(inputs, last))
-	}
-	cmdArgs = append(cmdArgs, "--width", anyToString(p["width"]), "--height", anyToString(p["height"]))
-	if intFrom(p["render_width"], 0) != 0 && intFrom(p["render_height"], 0) != 0 {
-		cmdArgs = append(cmdArgs, "--render-width", anyToString(p["render_width"]), "--render-height", anyToString(p["render_height"]))
-	}
-	cmdArgs = append(cmdArgs, "--frames", anyToString(p["frames"]), "--steps", anyToString(p["steps"]), "--layers", anyToString(p["layers"]))
-	if intFrom(p["core_reuse"], 0) != 0 {
-		cmdArgs = append(cmdArgs, "--core-reuse", anyToString(p["core_reuse"]))
-	} else {
-		cmdArgs = append(cmdArgs, "--reuse", anyToString(firstNonEmpty(p["reuse"], 1)))
-	}
-	if boolFrom(p["token_reduction"]) {
-		cmdArgs = append(cmdArgs, "--token-reduction")
-	}
-	if boolFrom(p["ssd_streaming"]) {
-		cmdArgs = append(cmdArgs, "--ssd-streaming")
-	}
-	if boolFrom(p["int8_row_fc2"]) && !boolFrom(p["ssd_streaming"]) {
-		cmdArgs = append(cmdArgs, "--use-int8-row-fc2")
-	}
-	cmdArgs = append(cmdArgs, "--seed", anyToString(p["seed"]), "-o", outPath)
-	env := os.Environ()
-	if boolFromDefault(p["preview"], true) {
-		env = append(env, "KITTY_WINDOW_ID=1") // force Kitty terminal for --show preview
-	}
-	if envMap, ok := p["env"].(map[string]any); ok {
-		for key, value := range envMap {
-			text := anyToString(value)
-			if text != "" {
-				env = append(env, key+"="+text)
-			}
-		}
-	}
-	job.Command = append([]string{}, cmdArgs...)
-	job.State = "running"
-	now := nowSeconds()
-	job.Started = &now
-	r.Emit("job", job.Summary())
-	r.Emit("queue", r.QueueState())
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		msg := err.Error()
-		job.State = "failed"
-		job.Error = &msg
-		return
-	}
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-	cmd.Dir = r.cfg.Workdir
-	cmd.Env = env
-	cmd.Stdout = writer
-	cmd.Stderr = writer
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	r.mu.Lock()
-	r.proc = cmd
-	r.mu.Unlock()
-	if err := cmd.Start(); err != nil {
-		_ = writer.Close()
-		_ = reader.Close()
-		msg := err.Error()
-		job.State = "failed"
-		job.Error = &msg
-		return
-	}
-	_ = writer.Close()
-	r.pump(job, reader)
-	_ = reader.Close()
-	code := 0
-	if err := cmd.Wait(); err != nil {
-		if exit, ok := err.(*exec.ExitError); ok {
-			code = exit.ExitCode()
-		} else {
-			code = 1
-		}
-	}
-	finished := nowSeconds()
-	job.Finished = &finished
-	if job.State == "cancelling" {
-		job.State = "cancelled"
-		return
-	}
-	if code == 0 && FileExists(outPath) {
-		job.State = "done"
-		job.Output = &name
-		writeSidecar(outPath, job)
-		return
-	}
-	job.State = "failed"
-	msg := fmt.Sprintf("h3 exited with code %d", code)
-	job.Error = &msg
-}
-
-func (r *Runner) ensureInteractiveLocked(p map[string]any) error {
-	if r.interactiveProc != nil {
-		return nil
-	}
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(r.cfg.H3, "--profile", "-d", r.cfg.Model, "--width", anyToString(p["width"]), "--height", anyToString(p["height"]))
-	cmd.Dir = r.cfg.Workdir
-	cmd.Stdout = writer
-	cmd.Stderr = writer
-	cmd.Env = os.Environ()
-	if boolFromDefault(p["preview"], true) {
-		cmd.Env = append(cmd.Env, "KITTY_WINDOW_ID=1") // force Kitty terminal for !show preview
-	}
-	if envMap, ok := p["env"].(map[string]any); ok {
-		for key, value := range envMap {
-			text := anyToString(value)
-			if text != "" {
-				cmd.Env = append(cmd.Env, key+"="+text)
-			}
-		}
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		_ = reader.Close()
-		_ = writer.Close()
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		_ = reader.Close()
-		_ = writer.Close()
-		_ = stdin.Close()
-		return err
-	}
-	_ = writer.Close()
-	r.interactiveProc = cmd
-	r.interactiveIn = stdin
-	r.interactiveDone = make(chan struct{})
-	go r.readInteractive(reader, cmd, r.interactiveDone)
-	_, outputs, err := r.cfg.SessionDirs(anyToString(p["session_name"]))
-	if err != nil {
-		return err
-	}
-	return r.interactiveSendLocked("!output " + outputs)
-}
-
-func (r *Runner) readInteractive(reader *os.File, cmd *exec.Cmd, done chan struct{}) {
-	defer close(done)
-	defer reader.Close()
-	br := bufio.NewReader(reader)
-	var buf []byte
-	previewState := newH3PreviewState()
-	for {
-		b, err := br.ReadByte()
-		if err != nil {
-			break
-		}
-		if b == '\n' || b == '\r' {
-			line := stringsTrimSpaceRight(string(buf))
-			buf = buf[:0]
-			if line != "" {
-				text := line
-				r.interactiveLines <- &text
-				r.Emit("terminal", map[string]any{"line": truncateKittyLine(line), "running": true})
-				// Check for h3 preview frames (Kitty protocol)
-				if previewData, pw, ph, pStep, pTotal, pFrameIndex, pFrameTotal, _ := tryParseH3Preview(line, previewState); previewData != "" {
-					r.Emit("preview", map[string]any{
-						"url":        previewData,
-						"width":      pw,
-						"height":     ph,
-						"step":       pStep,
-						"total":      pTotal,
-						"frameIndex": pFrameIndex,
-						"frameTotal": pFrameTotal,
-					})
-				}
-			}
-			continue
-		}
-		buf = append(buf, b)
-	}
-	_, _ = cmd.Process.Wait()
-	r.interactiveLines <- nil
-}
-
-func (r *Runner) StopInteractive() {
-	r.interactiveLock.Lock()
-	defer r.interactiveLock.Unlock()
-	proc := r.interactiveProc
-	stdin := r.interactiveIn
-	done := r.interactiveDone
-	r.interactiveProc = nil
-	r.interactiveIn = nil
-	r.interactiveDone = nil
-	if proc == nil {
-		return
-	}
-	if stdin != nil {
-		_, _ = io.WriteString(stdin, "!quit\n")
-		_ = stdin.Close()
-	}
-	if done != nil {
-		select {
-		case <-done:
-			return
-		case <-time.After(5 * time.Second):
-		}
-	}
-	if proc.Process != nil {
-		_ = proc.Process.Kill()
-		_, _ = proc.Process.Wait()
-	}
-}
-
-func (r *Runner) interactiveSendLocked(line string) error {
-	if r.interactiveIn == nil {
-		return fmt.Errorf("interactive stdin unavailable")
-	}
-	// The h3 REPL reads stdin one line at a time and treats a blank line as
-	// "repeat the last command". A multi-paragraph prompt containing embedded
-	// newlines (blank lines between sections) would otherwise be split into
-	// several stdin lines, silently re-triggering the render once per blank
-	// line. Flatten to a single line so the whole prompt is one command.
-	flat := strings.Join(strings.Fields(line), " ")
-	if _, err := io.WriteString(r.interactiveIn, flat+"\n"); err != nil {
-		return err
-	}
-	r.Emit("terminal", map[string]any{"line": "h3> " + flat, "running": true})
-	return nil
-}
-
-func (r *Runner) normalizeInteractiveStateLocked() {
-	if r.interactiveDone == nil {
-		return
-	}
-	select {
-	case <-r.interactiveDone:
-		r.interactiveProc = nil
-		r.interactiveIn = nil
-		r.interactiveDone = nil
-	default:
-	}
-}
-
-func (r *Runner) runInteractive(job *Job) {
-	refs, _ := job.Params["refs"].([]any)
-	for _, raw := range refs {
-		ref, ok := raw.(map[string]any)
-		if ok && anyToString(ref["kind"]) != "image" {
-			job.State = "failed"
-			msg := "interactive h3 mode currently supports image references only"
-			job.Error = &msg
-			return
-		}
-	}
-	job.State = "running"
-	now := nowSeconds()
-	job.Started = &now
-	r.interactiveLock.Lock()
-	defer r.interactiveLock.Unlock()
-	if err := r.ensureInteractiveLocked(job.Params); err != nil {
-		msg := err.Error()
-		job.State = "failed"
-		job.Error = &msg
-		return
-	}
-	inputs, outputs, err := r.cfg.SessionDirs(anyToString(job.Params["session_name"]))
-	if err != nil {
-		msg := err.Error()
-		job.State = "failed"
-		job.Error = &msg
-		return
-	}
-	p := job.Params
-	commands := []string{
-		fmt.Sprintf("!size %sx%s", anyToString(p["width"]), anyToString(p["height"])),
-		fmt.Sprintf("!frames %s", anyToString(p["frames"])),
-		fmt.Sprintf("!steps %s", anyToString(p["steps"])),
-		fmt.Sprintf("!layers %s", anyToString(p["layers"])),
-		fmt.Sprintf("!reuse %s", anyToString(firstNonEmpty(p["reuse"], 1))),
-		fmt.Sprintf("!seed %s", anyToString(p["seed"])),
-	}
-	if boolFromDefault(p["preview"], true) {
-		commands = append(commands, "!show on", "!preview-mode estimate")
-	}
-	if intFrom(p["render_width"], 0) != 0 && intFrom(p["render_height"], 0) != 0 {
-		commands = append(commands, fmt.Sprintf("!render-size %sx%s", anyToString(p["render_width"]), anyToString(p["render_height"])))
-	} else {
-		commands = append(commands, "!render-size native")
-	}
-	commands = append(commands,
-		fmt.Sprintf("!token-reduction %s", onOff(boolFrom(p["token_reduction"]))),
-		fmt.Sprintf("!ssd-streaming %s", onOff(boolFrom(p["ssd_streaming"]))),
-		fmt.Sprintf("!int8-row-fc2 %s", onOff(boolFrom(p["int8_row_fc2"]))),
-		"!refs clear",
-		"!first clear",
-		"!last clear",
-	)
-	for _, raw := range refs {
-		ref, ok := raw.(map[string]any)
-		if ok {
-			commands = append(commands, "!ref-image "+filepath.Join(inputs, anyToString(ref["name"])))
-		}
-	}
-	if first := anyToString(p["first_frame"]); first != "" {
-		commands = append(commands, "!first "+filepath.Join(inputs, first))
-	}
-	if last := anyToString(p["last_frame"]); last != "" {
-		commands = append(commands, "!last "+filepath.Join(inputs, last))
-	}
-	r.Emit("job", job.Summary())
-	for _, command := range commands {
-		if err := r.interactiveSendLocked(command); err != nil {
-			msg := "interactive h3 has exited; load it again"
-			job.State = "failed"
-			job.Error = &msg
-			return
-		}
-	}
-	prompt := anyToString(p["prompt"])
-	if err := r.interactiveSendLocked(prompt); err != nil {
-		msg := "interactive h3 has exited; load it again"
-		job.State = "failed"
-		job.Error = &msg
-		return
-	}
-	job.Command = append(append([]string{}, commands...), prompt)
-	doneRe := regexp.MustCompile(`Done -> (.+?) \[`)
-	// h3's own diagnostics (cache hits/misses, GPU scheduling notes, preview
-	// step lines, etc.) all share the same "h3: " prefix as fatal errors, so
-	// that prefix alone can't distinguish a real failure from routine status
-	// output — treating every "h3: " line as fatal used to kill job tracking
-	// (and the UI's progress bar) within the first few seconds of every
-	// render. Success/failure is instead decided the same way the one-shot
-	// path decides it: a "Done -> ..." line, or the process exiting/timing
-	// out without one.
-	progRe := regexp.MustCompile(`^(.*?)\s{2,}(\d+)/(\d+)\s*$`)
-	profRe := regexp.MustCompile(`^h3 profile:\s+(.*?)\s{2,}(\S.*?)\s+wall=\s*([\d.]+)s`)
-	// h3's "Done -> ..." success line is printed with printf (stdout), while
-	// virtually everything else it logs goes through fprintf(stderr, ...).
-	// Since stdout is a plain pipe here rather than a tty, libc fully
-	// block-buffers it — the line can sit in the child's own stdio buffer
-	// indefinitely once it goes back to waiting at its prompt, never reaching
-	// us. Fall back to noticing a new output file on disk so a render isn't
-	// stuck "running" forever just because that one line never flushed.
-	// h3 numbers output files per-process (video-0001.mp4, video-0002.mp4, ...
-	// restarting from 1 every time the interactive process is (re)loaded), so
-	// a filename alone doesn't tell us a file is new: a fresh render can
-	// overwrite a stale file left over from an earlier session. Track mtimes
-	// instead, so a rewritten file is recognized even when its name collides
-	// with something already on disk.
-	initialModTime := map[string]time.Time{}
-	if entries, err := os.ReadDir(outputs); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".mp4") {
-				continue
-			}
-			if info, err := e.Info(); err == nil {
-				initialModTime[e.Name()] = info.ModTime()
-			}
-		}
-	}
-	candidateSize := map[string]int64{}
-	deadline := time.Now().Add(time.Hour)
-	var output string
-	for time.Now().Before(deadline) {
-		remaining := time.Until(deadline)
-		select {
-		case line := <-r.interactiveLines:
-			if line == nil {
-				goto finish
-			}
-			text := *line
-			job.Log = append(job.Log, truncateKittyLine(text))
-			if len(job.Log) > 400 {
-				job.Log = job.Log[100:]
-			}
-			if m := doneRe.FindStringSubmatch(text); len(m) == 2 {
-				output = stringsTrimSpace(m[1])
-				goto finish
-			}
-			if m := progRe.FindStringSubmatch(text); len(m) == 4 {
-				job.Phase = stringsTrimSpace(m[1])
-				job.Progress = []int{intFrom(m[2], 0), intFrom(m[3], 0)}
-			} else if len(text) >= 11 && text[:11] == "h3 profile:" {
-				if m := profRe.FindStringSubmatch(text); len(m) == 4 {
-					wall, _ := strconv.ParseFloat(m[3], 64)
-					job.Profile = append(job.Profile, map[string]any{
-						"component": stringsTrimSpace(m[1]),
-						"stage":     stringsTrimSpace(m[2]),
-						"wall":      wall,
-					})
-				}
-			}
-			r.Emit("job", job.Summary())
-		case <-time.After(minDuration(remaining, 500*time.Millisecond)):
-			entries, err := os.ReadDir(outputs)
-			if err != nil {
-				continue
-			}
-			for _, e := range entries {
-				name := e.Name()
-				if e.IsDir() || !strings.HasSuffix(name, ".mp4") {
-					continue
-				}
-				info, err := e.Info()
-				if err != nil {
-					continue
-				}
-				if initial, ok := initialModTime[name]; ok && info.ModTime().Equal(initial) {
-					continue // untouched leftover from before this job started
-				}
-				size := info.Size()
-				if prev, ok := candidateSize[name]; ok && prev == size && size > 0 {
-					output = filepath.Join(outputs, name)
-					goto finish
-				}
-				candidateSize[name] = size
-			}
-		}
-	}
-finish:
-	finished := nowSeconds()
-	job.Finished = &finished
-	if output != "" && FileExists(output) {
-		name := filepath.Base(output)
-		job.State = "done"
-		job.Output = &name
-		writeSidecar(output, job)
-		return
-	}
-	job.State = "failed"
-	if job.Error == nil {
-		msg := "interactive h3 did not produce an output"
-		job.Error = &msg
-	}
-}
-
-// h3PreviewState tracks ongoing Kitty protocol preview frame parsing.
-type h3PreviewState struct {
-	inPreview  bool    // true while inside a Kitty OSC sequence
-	width      int     // frame width (from s= attribute)
-	height     int     // frame height (from v= attribute)
-	chunk      []byte  // accumulated base64 data
-	step       int     // current step number (set from "h3: preview" line)
-	total      int     // total steps (set from "h3: preview" line)
-	frameIndex int     // current video frame index (set from "frame M/F")
-	frameTotal int     // total video frames in the preview chunk
-	lastSeen   time.Time // for garbage collection of stale state
-}
-
-func newH3PreviewState() *h3PreviewState {
-	return &h3PreviewState{step: -1, total: -1, frameIndex: -1, frameTotal: -1}
-}
-
-// tryParseH3Preview checks if a line contains a Kitty protocol preview frame
-// and returns extracted data if found. The caller must pass the previous state.
-func tryParseH3Preview(line string, state *h3PreviewState) (frameData string, width, height, step, total, frameIndex, frameTotal int, done bool) {
-	state.lastSeen = time.Now()
-	// Detect start of Kitty protocol: \033_Ga=T,
-	osc := "\033_G"
-	idx := strings.Index(line, osc)
-	if idx >= 0 {
-		rest := line[idx+len(osc):]
-		// Parse attributes: s=W,v=H,...;
-		// Format: a=T,f=24,t=d,s=512,v=480,w=1024,h=960,m=0;<base64>
-		attrEnd := strings.Index(rest, ";")
-		if attrEnd > 0 {
-			attrs := rest[:attrEnd]
-			if m := findKV(attrs, "s="); m != "" {
-				if i, err := strconv.Atoi(m); err == nil && i > 0 {
-					width = i
-					if state.width == 0 {
-						state.width = i
-					}
-				}
-			}
-			if m := findKV(attrs, "v="); m != "" {
-				if i, err := strconv.Atoi(m); err == nil && i > 0 {
-					height = i
-					if state.height == 0 {
-						state.height = i
-					}
-				}
-			}
-			// Check if this is a preview line (has step info)
-			if state.step > 0 && state.total > 0 {
-				state.inPreview = true
-			}
-		}
-	}
-	// Detect a preview status line — this sets step/total. Interactive mode
-	// (h3_cli.c) prints "h3: preview N/T"; one-shot mode (main.c) prints
-	// "h3: denoise preview N/T, video frame M/F via <protocol>". Match on
-	// "preview " and read the "N/T" token that follows it so both formats work.
-	if !state.inPreview && strings.HasPrefix(line, "h3: ") {
-		if pIdx := strings.Index(line, "preview "); pIdx >= 0 {
-			rest := line[pIdx+len("preview "):]
-			end := strings.IndexAny(rest, ", \t")
-			if end < 0 {
-				end = len(rest)
-			}
-			numStr := strings.SplitN(rest[:end], "/", 2)
-			if len(numStr) == 2 {
-				if s, err := strconv.Atoi(numStr[0]); err == nil {
-					state.step = s
-				}
-				if t, err := strconv.Atoi(numStr[1]); err == nil {
-					state.total = t
-				}
-			}
-			// Both status-line formats also carry a "frame M/F" token for the
-			// decoded video-frame position within the preview chunk:
-			// interactive "h3: preview N/T, frame M/F" and one-shot
-			// "h3: denoise preview N/T, video frame M/F via <protocol>".
-			if fIdx := strings.Index(line, "frame "); fIdx >= 0 {
-				frest := line[fIdx+len("frame "):]
-				fend := strings.IndexAny(frest, ", \t")
-				if fend < 0 {
-					fend = len(frest)
-				}
-				fNumStr := strings.SplitN(frest[:fend], "/", 2)
-				if len(fNumStr) == 2 {
-					if fi, err := strconv.Atoi(fNumStr[0]); err == nil {
-						state.frameIndex = fi
-					}
-					if ft, err := strconv.Atoi(fNumStr[1]); err == nil {
-						state.frameTotal = ft
-					}
-				}
-			}
-		}
-	}
-	// Inside Kitty protocol — accumulate every complete "\033_G<attrs>;<data>\033\\"
-	// segment present in this line. h3.c writes every chunk of a frame
-	// back-to-back with no newline in between (only a single trailing '\n'
-	// after the very last chunk), so a real image typically arrives as one
-	// line containing dozens of chunks — not one chunk per line — and each
-	// must be processed, not just the first.
-	if state.inPreview {
-		cursor := 0
-		const gStart, gTerm = "\033_G", "\033\\"
-		for {
-			relStart := strings.Index(line[cursor:], gStart)
-			if relStart < 0 {
-				break
-			}
-			segStart := cursor + relStart
-			rest := line[segStart+len(gStart):]
-			semi := strings.Index(rest, ";")
-			if semi < 0 {
-				break // attrs not fully arrived yet — wait for more data
-			}
-			relTerm := strings.Index(rest[semi+1:], gTerm)
-			if relTerm < 0 {
-				break // this chunk's data/terminator hasn't fully arrived yet
-			}
-			attrs := rest[:semi]
-			data := stringsTrimSpaceRight(rest[semi+1 : semi+1+relTerm])
-			if data != "" {
-				if state.chunk == nil {
-					state.chunk = make([]byte, 0, len(data))
-				}
-				state.chunk = append(state.chunk, []byte(data)...)
-			}
-			cursor = segStart + len(gStart) + semi + 1 + relTerm + len(gTerm)
-			// If m=0 or no more flag, this chunk completes the frame
-			more := findKV(attrs, "m=")
-			if more == "" || more == "0" {
-				if len(state.chunk) > 0 {
-					if url, ok := encodeRGB24PNGDataURL(string(state.chunk), state.width, state.height); ok {
-						frameData = url
-						done = true
-					}
-				}
-				// Capture step/total/dimensions before the reset below clears
-				// them — the attrs (s=/v=) only appear on the first chunk of a
-				// multi-chunk frame, so fall back to state here.
-				step = state.step
-				total = state.total
-				frameIndex = state.frameIndex
-				frameTotal = state.frameTotal
-				if width == 0 {
-					width = state.width
-				}
-				if height == 0 {
-					height = state.height
-				}
-				state.inPreview = false
-				state.width = 0
-				state.height = 0
-				state.step = -1
-				state.total = -1
-				state.frameIndex = -1
-				state.frameTotal = -1
-				state.chunk = nil
-				return
-			}
-		}
-	}
-	return
-}
-
-// encodeRGB24PNGDataURL takes the raw Kitty-protocol payload (base64-encoded
-// 24-bit RGB pixels, per h3_terminal.c's "f=24" transmission — NOT a PNG
-// file) and re-encodes it into an actual PNG so browsers can display it via
-// an <img> data: URL.
-func encodeRGB24PNGDataURL(rgbBase64 string, width, height int) (string, bool) {
-	if width <= 0 || height <= 0 {
-		return "", false
-	}
-	raw, err := base64.StdEncoding.DecodeString(rgbBase64)
-	if err != nil {
-		return "", false
-	}
-	if len(raw) < width*height*3 {
-		return "", false
-	}
-	img := image.NewNRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		row := y * width * 3
-		for x := 0; x < width; x++ {
-			o := row + x*3
-			img.SetNRGBA(x, y, color.NRGBA{R: raw[o], G: raw[o+1], B: raw[o+2], A: 255})
-		}
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return "", false
-	}
-	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), true
-}
-
-// truncateKittyLine shortens a raw Kitty-protocol escape line (which can run
-// to hundreds of KB of base64 for a single frame) before it goes into the
-// terminal log/SSE feed — the full line is only needed by tryParseH3Preview.
-func truncateKittyLine(line string) string {
-	const max = 80
-	if !strings.Contains(line, "\033_G") || len(line) <= max {
-		return line
-	}
-	return line[:max] + "…"
-}
-
-func findKV(attrs, prefix string) string {
-	// Simple key=value parser for a single key within the attribute string
-	idx := strings.Index(attrs, prefix)
-	if idx < 0 {
-		return ""
-	}
-	rest := attrs[idx+len(prefix):]
-	end := strings.IndexAny(rest, ",; \t\n\r")
-	if end <= 0 {
-		return rest
-	}
-	return rest[:end]
-}
-
-func (r *Runner) pump(job *Job, reader *os.File) {
-	br := bufio.NewReader(reader)
-	var buf []byte
-	profRe := regexp.MustCompile(`^h3 profile:\s+(.*?)\s{2,}(\S.*?)\s+wall=\s*([\d.]+)s`)
-	progRe := regexp.MustCompile(`^(.*?)\s{2,}(\d+)/(\d+)\s*$`)
-	previewState := newH3PreviewState()
-	for {
-		b, err := br.ReadByte()
-		if err != nil {
-			break
-		}
-		if b == '\n' || b == '\r' {
-			line := stringsTrimSpaceRight(string(buf))
-			buf = buf[:0]
-			if line == "" {
-				continue
-			}
-			job.Log = append(job.Log, truncateKittyLine(line))
-			if len(job.Log) > 400 {
-				job.Log = job.Log[100:]
-			}
-			if m := progRe.FindStringSubmatch(line); len(m) == 4 {
-				job.Phase = stringsTrimSpace(m[1])
-				job.Progress = []int{intFrom(m[2], 0), intFrom(m[3], 0)}
-			} else if len(line) >= 11 && line[:11] == "h3 profile:" {
-				if m := profRe.FindStringSubmatch(line); len(m) == 4 {
-					wall, _ := strconv.ParseFloat(m[3], 64)
-					job.Profile = append(job.Profile, map[string]any{
-						"component": stringsTrimSpace(m[1]),
-						"stage":     stringsTrimSpace(m[2]),
-						"wall":      wall,
-					})
-				}
-			}
-			// Check for h3 preview frames (Kitty protocol)
-			if previewData, pw, ph, pStep, pTotal, pFrameIndex, pFrameTotal, previewDone := tryParseH3Preview(line, previewState); previewData != "" {
-				r.Emit("preview", map[string]any{
-					"url":        previewData,
-					"width":      pw,
-					"height":     ph,
-					"step":       pStep,
-					"total":      pTotal,
-					"frameIndex": pFrameIndex,
-					"frameTotal": pFrameTotal,
-				})
-				if previewDone {
-					previewState.chunk = nil
-				}
-			}
-			r.Emit("job", job.Summary())
-			r.Emit("terminal", map[string]any{"line": truncateKittyLine(line), "running": true})
-			continue
-		}
-		buf = append(buf, b)
-	}
 }
 
 func randomID() string {
@@ -1200,27 +201,937 @@ func randomID() string {
 	return hex.EncodeToString(buf)
 }
 
-func onOff(v bool) string {
-	if v {
-		return "on"
+// Submit queues a validated render.
+func (r *Runner) Submit(raw map[string]any, p RenderParams) JobSummary {
+	job := &Job{
+		ID: randomID(), Session: safeStem(p.Session), Label: p.Label, Params: p, Raw: cloneMap(raw),
+		State: "queued", Profile: []ProfileRow{},
 	}
-	return "off"
+	job.Raw["seed"] = p.Seed
+	job.Raw["session_name"] = job.Session
+	r.mu.Lock()
+	r.jobs[job.ID] = job
+	r.order = append(r.order, job.ID)
+	r.pending = append(r.pending, job.ID)
+	r.pruneLocked()
+	r.cond.Signal()
+	r.mu.Unlock()
+	r.emitQueue()
+	return job.Summary(false)
 }
 
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
+func (r *Runner) pruneLocked() {
+	finished := 0
+	for i := len(r.order) - 1; i >= 0; i-- {
+		job := r.jobs[r.order[i]]
+		if job == nil {
+			continue
+		}
+		switch job.state() {
+		case "done", "failed", "cancelled":
+			finished++
+			if finished > maxFinishedJobs {
+				delete(r.jobs, r.order[i])
+				r.order = append(r.order[:i], r.order[i+1:]...)
+			}
+		}
 	}
-	return b
 }
 
-func stringsTrimSpaceRight(s string) string {
-	for len(s) > 0 {
-		last := s[len(s)-1]
-		if last != ' ' && last != '\t' && last != '\n' && last != '\r' {
+// Cancel removes a queued job or stops the running one.
+func (r *Runner) Cancel(id string) bool {
+	r.mu.Lock()
+	job := r.jobs[id]
+	if job == nil {
+		r.mu.Unlock()
+		return false
+	}
+	for i, pid := range r.pending {
+		if pid == id {
+			r.pending = append(r.pending[:i], r.pending[i+1:]...)
+			r.mu.Unlock()
+			job.set(func(j *Job) { j.State = "cancelled"; j.Finished = nowSeconds() })
+			r.events.Emit("job", job.Summary(false))
+			r.emitQueue()
+			return true
+		}
+	}
+	running := r.current == job
+	proc := r.proc
+	r.mu.Unlock()
+	if !running {
+		return false
+	}
+	job.set(func(j *Job) { j.cancelRequested = true; j.State = "cancelling" })
+	r.events.Emit("job", job.Summary(false))
+	if job.Params.RunMode == "interactive" {
+		go r.StopInteractive()
+	} else if proc != nil {
+		go stopProcess(proc)
+	}
+	return true
+}
+
+func stopProcess(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	pid := cmd.Process.Pid
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+}
+
+// QueueState lists running and queued jobs, running first.
+func (r *Runner) QueueState() []JobSummary {
+	r.mu.Lock()
+	ids := append([]string{}, r.pending...)
+	current := r.current
+	r.mu.Unlock()
+	out := []JobSummary{}
+	if current != nil {
+		out = append(out, current.Summary(false))
+	}
+	for _, id := range ids {
+		r.mu.Lock()
+		job := r.jobs[id]
+		r.mu.Unlock()
+		if job != nil {
+			out = append(out, job.Summary(false))
+		}
+	}
+	return out
+}
+
+func (r *Runner) emitQueue() { r.events.Emit("queue", r.QueueState()) }
+
+// Busy reports whether a render is running or queued.
+func (r *Runner) Busy() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.current != nil || len(r.pending) > 0
+}
+
+func (r *Runner) loop() {
+	for {
+		r.mu.Lock()
+		for len(r.pending) == 0 {
+			r.cond.Wait()
+		}
+		id := r.pending[0]
+		r.pending = r.pending[1:]
+		job := r.jobs[id]
+		r.current = job
+		r.mu.Unlock()
+		if job != nil {
+			r.execute(job)
+		}
+		r.mu.Lock()
+		r.current = nil
+		r.proc = nil
+		r.mu.Unlock()
+		r.emitQueue()
+	}
+}
+
+func (r *Runner) execute(job *Job) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			job.set(func(j *Job) { j.State = "failed"; j.Error = fmt.Sprint(rec) })
+		}
+		job.set(func(j *Job) {
+			if j.Finished == 0 {
+				j.Finished = nowSeconds()
+			}
+			j.EtaS = 0
+		})
+		summary := job.Summary(false)
+		if dir := job.previewDir(); summary.State != "done" && dir != "" {
+			_ = os.RemoveAll(dir)
+		}
+		r.jobLog(job, fmt.Sprintf("[studio] %s: %s in %s", firstNonEmpty(summary.Label, "take"), summary.State,
+			formatSeconds(summary.Finished-summary.Started)))
+		if summary.State == "failed" && summary.Error != "" {
+			r.jobLog(job, "!! "+summary.Error)
+		}
+		r.events.Emit("job", summary)
+		if summary.State == "done" {
+			r.events.Emit("takes", map[string]any{"session": job.Session, "name": summary.Output})
+		}
+	}()
+	estimate, _, _ := r.cfg.Estimate(job.Session, job.Params)
+	job.set(func(j *Job) {
+		j.State = "running"
+		j.Started = nowSeconds()
+		j.EstimateS = estimate
+		j.preview = newH3PreviewState()
+	})
+	if job.Params.PreviewOn() {
+		if dir, err := r.cfg.SessionSubdir(job.Session, "previews"); err == nil {
+			job.set(func(j *Job) { j.PreviewDir = filepath.Join(dir, j.ID) })
+		}
+	}
+	r.events.Emit("job", job.Summary(false))
+	r.emitQueue()
+	if job.Params.RunMode == "interactive" {
+		r.runInteractive(job)
+	} else {
+		r.runOneShot(job)
+	}
+}
+
+func (r *Runner) fail(job *Job, msg string) {
+	job.set(func(j *Job) {
+		if j.cancelRequested {
+			j.State = "cancelled"
+			return
+		}
+		j.State = "failed"
+		j.Error = msg
+		j.Hint = hintFor(append(append([]string{}, j.tail...), msg))
+	})
+}
+
+// jobDirs returns the session's inputs and outputs dirs and a private
+// directory h3 writes the take into before it is moved into outputs/.
+func (r *Runner) jobDirs(job *Job) (inputs, outputs, work string, err error) {
+	dir, err := r.cfg.EnsureSession(job.Session)
+	if err != nil {
+		return "", "", "", err
+	}
+	inputs, outputs = filepath.Join(dir, "inputs"), filepath.Join(dir, "outputs")
+	work = filepath.Join(outputs, ".job-"+job.ID)
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return "", "", "", err
+	}
+	return inputs, outputs, work, nil
+}
+
+func (r *Runner) runOneShot(job *Job) {
+	p := job.Params
+	inputs, _, work, err := r.jobDirs(job)
+	if err != nil {
+		r.fail(job, err.Error())
+		return
+	}
+	defer os.RemoveAll(work)
+	out := filepath.Join(work, "take.mp4")
+	args := BuildOneShotArgs(p, r.cfg.Model(), inputs, out)
+	env := envFor(p)
+	h3 := r.cfg.H3()
+	job.set(func(j *Job) {
+		j.Command = append([]string{h3}, args...)
+		j.CommandDisplay = displayCommand(env, j.Command)
+	})
+	r.jobLog(job, "$ "+job.Summary(false).CommandDisplay)
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		r.fail(job, err.Error())
+		return
+	}
+	cmd := exec.Command(h3, args...)
+	cmd.Dir = r.cfg.Workdir()
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout, cmd.Stderr = writer, writer
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		writer.Close()
+		reader.Close()
+		r.fail(job, err.Error())
+		return
+	}
+	writer.Close()
+	r.mu.Lock()
+	r.proc = cmd
+	r.mu.Unlock()
+	job.mu.Lock()
+	cancelled := job.cancelRequested
+	job.mu.Unlock()
+	if cancelled {
+		go stopProcess(cmd)
+	}
+	splitter := &lineSplitter{
+		emit:   func(line string, overwrite bool) { r.jobEmit(job, line, overwrite) },
+		commit: func(line string) { r.jobCommit(job, line) },
+	}
+	splitter.readFrom(reader)
+	reader.Close()
+	waitErr := cmd.Wait()
+	code := 0
+	if waitErr != nil {
+		code = 1
+		var exit *exec.ExitError
+		if errors.As(waitErr, &exit) {
+			code = exit.ExitCode()
+		}
+	}
+	job.mu.Lock()
+	cancelled = job.cancelRequested
+	job.mu.Unlock()
+	switch {
+	case cancelled:
+		job.set(func(j *Job) { j.State = "cancelled" })
+	case code == 0 && FileExists(out):
+		r.finishTake(job, out)
+	default:
+		job.mu.Lock()
+		msg := lastMeaningfulLine(job.tail)
+		job.mu.Unlock()
+		if msg == "" {
+			msg = fmt.Sprintf("h3 exited with code %d", code)
+		}
+		r.fail(job, msg)
+	}
+}
+
+// finishTake moves a produced video into outputs/ under the take's name,
+// prunes its previews and writes the sidecar.
+func (r *Runner) finishTake(job *Job, produced string) {
+	outputs, err := r.cfg.SessionSubdir(job.Session, "outputs")
+	if err != nil {
+		r.fail(job, err.Error())
+		return
+	}
+	stem := safeStem(firstNonEmpty(job.Label, "take")) + "-" + time.Now().Format("0102-150405")
+	final := uniquePath(outputs, stem, ".mp4")
+	if err := os.Rename(produced, final); err != nil {
+		r.fail(job, "could not move the take into outputs: "+err.Error())
+		return
+	}
+	var previews []string
+	previewRel := ""
+	if dir := job.previewDir(); dir != "" && DirExists(dir) {
+		previewRel = "previews/" + job.ID
+		for _, name := range prunePreviews(dir) {
+			previews = append(previews, previewRel+"/"+name)
+		}
+		if len(previews) == 0 {
+			_ = os.RemoveAll(dir)
+			previewRel = ""
+		}
+	}
+	finished := nowSeconds()
+	job.set(func(j *Job) {
+		j.State = "done"
+		j.Output = filepath.Base(final)
+		j.Finished = finished
+		if len(previews) == 0 {
+			j.PreviewDir = ""
+		}
+	})
+	summary := job.Summary(true)
+	meta := map[string]any{}
+	if data, err := jsonRoundTrip(summary); err == nil {
+		meta = data
+	}
+	meta["duration_s"] = round2(summary.Finished - summary.Started)
+	probe := r.cfg.probeMedia(final)
+	meta["probe"] = probe
+	if info, err := os.Stat(final); err == nil {
+		meta["probe_mtime"] = float64(info.ModTime().UnixNano()) / 1e9
+	}
+	if len(previews) > 0 {
+		meta["previews"] = previews
+		meta["preview_dir"] = previewRel
+	}
+	_ = writeJSONAtomic(sidecarFor(final, false), meta)
+}
+
+// jobEmit handles a displayed line (possibly a \r progress update).
+func (r *Runner) jobEmit(job *Job, line string, overwrite bool) {
+	if _, kitty := kittyPayload(line); kitty {
+		return
+	}
+	if phase, n, total, ok := parseProgress(line); ok {
+		now := time.Now()
+		emit := false
+		job.mu.Lock()
+		if phase != job.Phase {
+			emit = true
+		}
+		job.Phase = phase
+		if stage := stageFor(phase); stage != "" {
+			job.Stage = stage
+		}
+		job.Progress = []int{n, total}
+		if phase == "denoise" {
+			if job.denoiseT0.IsZero() || n < job.denoiseN0 {
+				job.denoiseT0, job.denoiseN0 = now, n
+			} else if n > job.denoiseN0 {
+				perStep := now.Sub(job.denoiseT0).Seconds() / float64(n-job.denoiseN0)
+				job.EtaS = math.Round(perStep * float64(total-n))
+			}
+		} else if job.Stage != "denoise" {
+			job.EtaS = 0
+		}
+		if emit || n == total || now.Sub(job.lastProgress) >= progressInterval {
+			job.lastProgress = now
+			emit = true
+		}
+		payload := map[string]any{
+			"id": job.ID, "session": job.Session, "phase": job.Phase, "stage": job.Stage,
+			"progress": job.Progress, "eta_s": job.EtaS,
+		}
+		job.mu.Unlock()
+		if emit {
+			r.events.Emit("progress", payload)
+		}
+	}
+	r.events.Emit("log", map[string]any{"session": job.Session, "line": line, "replace": overwrite})
+}
+
+// jobCommit handles a finished line: previews, profile rows, the error tail
+// and the session's terminal log.
+func (r *Runner) jobCommit(job *Job, line string) {
+	job.mu.Lock()
+	frame, gotFrame := job.preview.feed(line)
+	job.mu.Unlock()
+	if gotFrame {
+		r.savePreview(job, frame)
+	}
+	text, kitty := kittyPayload(line)
+	if kitty {
+		if text == "" {
+			return
+		}
+		line = text
+	}
+	job.mu.Lock()
+	if row, ok := parseProfile(line); ok {
+		job.Profile = append(job.Profile, row)
+	}
+	job.tail = append(job.tail, line)
+	if len(job.tail) > tailLines {
+		job.tail = job.tail[len(job.tail)-tailLines:]
+	}
+	job.mu.Unlock()
+	r.logs.Write(job.Session, line)
+}
+
+// jobLog writes a studio-generated line to the log and the UI.
+func (r *Runner) jobLog(job *Job, line string) {
+	r.logs.Write(job.Session, line)
+	r.events.Emit("log", map[string]any{"session": job.Session, "line": line, "replace": false})
+}
+
+func (r *Runner) savePreview(job *Job, frame previewFrame) {
+	job.mu.Lock()
+	dir := job.PreviewDir
+	job.mu.Unlock()
+	if dir == "" {
+		return
+	}
+	name := previewFileName(frame)
+	if err := writePreviewPNG(filepath.Join(dir, name), frame); err != nil {
+		return
+	}
+	job.mu.Lock()
+	job.PreviewCount++
+	info := &PreviewInfo{
+		ID: job.ID, Session: job.Session, URL: mediaURL(job.Session, "previews/"+job.ID+"/"+name),
+		Step: frame.Step, Total: frame.Total, FrameIndex: frame.FrameIndex, FrameTotal: frame.FrameTotal,
+		Width: frame.Width, Height: frame.Height, Count: job.PreviewCount,
+	}
+	job.PreviewLatest = info
+	job.mu.Unlock()
+	r.events.Emit("preview", info)
+}
+
+// ── interactive ─────────────────────────────────────────────────────────
+
+// renderSentinel is an unknown REPL command sent after every prompt. h3
+// answers it on stderr (unbuffered) as soon as the render returns — success
+// or failure — whereas "Done -> …" goes to block-buffered stdout.
+const (
+	renderSentinel = "!studio-render-finished"
+	sentinelReply  = "h3: unknown command; type !help"
+)
+
+// InteractiveStatus is what the UI shows in the interactive pill.
+func (r *Runner) InteractiveStatus() map[string]any {
+	r.imu.Lock()
+	defer r.imu.Unlock()
+	if r.inter == nil || !r.inter.alive() {
+		return map[string]any{"loaded": false}
+	}
+	return map[string]any{"loaded": true, "session": r.inter.session, "pid": r.inter.cmd.Process.Pid}
+}
+
+func (r *Runner) interactiveAlive() bool {
+	r.imu.Lock()
+	defer r.imu.Unlock()
+	return r.inter != nil && r.inter.alive()
+}
+
+// LoadInteractive starts the resident h3 REPL if it isn't running.
+func (r *Runner) LoadInteractive(p RenderParams) error {
+	if err := r.ensureInteractive(p); err != nil {
+		return err
+	}
+	r.events.Emit("interactive", r.InteractiveStatus())
+	return nil
+}
+
+func (r *Runner) ensureInteractive(p RenderParams) error {
+	r.imu.Lock()
+	if r.inter != nil && r.inter.alive() {
+		r.imu.Unlock()
+		return nil
+	}
+	r.imu.Unlock()
+	session := safeStem(p.Session)
+	outputs, err := r.cfg.SessionSubdir(session, "outputs")
+	if err != nil {
+		return err
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	args := BuildInteractiveLaunchArgs(p, r.cfg.Model())
+	cmd := exec.Command(r.cfg.H3(), args...)
+	cmd.Dir = r.cfg.Workdir()
+	// Claim a Kitty terminal regardless of this render's preview setting, so
+	// later renders can turn !show on without relaunching h3.
+	env := append(envFor(p), "KITTY_WINDOW_ID=1")
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout, cmd.Stderr = writer, writer
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		reader.Close()
+		writer.Close()
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		reader.Close()
+		writer.Close()
+		return err
+	}
+	writer.Close()
+	proc := &interactiveProc{cmd: cmd, stdin: stdin, done: make(chan struct{}), session: session}
+	r.imu.Lock()
+	r.inter = proc
+	r.manualInFlight = 0
+	r.imu.Unlock()
+	line := "$ " + displayCommand(env, append([]string{r.cfg.H3()}, args...))
+	r.logs.Write(session, line)
+	r.events.Emit("log", map[string]any{"session": session, "line": line, "replace": false})
+	go r.readInteractive(proc, reader)
+	return proc.send("!output " + outputs)
+}
+
+func (r *Runner) readInteractive(proc *interactiveProc, reader *os.File) {
+	idlePreview := newH3PreviewState()
+	splitter := &lineSplitter{
+		emit: func(line string, overwrite bool) {
+			if job := r.activeInteractiveJob(proc); job != nil {
+				r.jobEmit(job, line, overwrite)
+				return
+			}
+			if _, kitty := kittyPayload(line); !kitty {
+				r.events.Emit("log", map[string]any{"session": proc.session, "line": line, "replace": overwrite})
+			}
+		},
+		commit: func(line string) {
+			isMarker := strings.TrimSpace(line) == sentinelReply
+			job := r.activeInteractiveJob(proc)
+			if isMarker {
+				r.imu.Lock()
+				switch {
+				case r.manualInFlight > 0:
+					r.manualInFlight--
+				case job != nil:
+					select {
+					case job.marker <- struct{}{}:
+					default:
+					}
+				}
+				r.imu.Unlock()
+				return
+			}
+			if job != nil {
+				r.jobCommit(job, line)
+				return
+			}
+			if _, gotFrame := idlePreview.feed(line); gotFrame {
+				return // previews of manual h3> prompts aren't kept
+			}
+			if text, kitty := kittyPayload(line); kitty {
+				if text == "" {
+					return
+				}
+				line = text
+			}
+			r.logs.Write(proc.session, line)
+		},
+	}
+	splitter.readFrom(reader)
+	reader.Close()
+	_ = proc.cmd.Wait()
+	close(proc.done)
+	r.imu.Lock()
+	if r.inter == proc {
+		r.inter = nil
+	}
+	r.imu.Unlock()
+	r.logs.Write(proc.session, "[studio] interactive h3 exited")
+	r.events.Emit("log", map[string]any{"session": proc.session, "line": "[studio] interactive h3 exited", "replace": false})
+	r.events.Emit("interactive", r.InteractiveStatus())
+}
+
+func (r *Runner) activeInteractiveJob(proc *interactiveProc) *Job {
+	r.imu.Lock()
+	defer r.imu.Unlock()
+	if r.inter != proc {
+		return nil
+	}
+	return r.interJob
+}
+
+// SendInteractive forwards a manual h3> line. Prompts (and !again) get the
+// completion sentinel so a later queued render can wait for them.
+func (r *Runner) SendInteractive(line string) error {
+	text := flattenLine(line)
+	if text == "" {
+		return errors.New("input is required")
+	}
+	if r.Busy() {
+		return errors.New("a render is running or queued; wait for it to finish")
+	}
+	r.imu.Lock()
+	proc := r.inter
+	if proc == nil || !proc.alive() {
+		r.imu.Unlock()
+		return errors.New("load interactive h3 first")
+	}
+	generates := !strings.HasPrefix(text, "!") || strings.EqualFold(strings.Fields(text)[0], "!again")
+	if generates {
+		r.manualInFlight++
+	}
+	r.imu.Unlock()
+	r.logs.Write(proc.session, "h3> "+text)
+	r.events.Emit("log", map[string]any{"session": proc.session, "line": "h3> " + text, "replace": false})
+	if err := proc.send(text); err != nil {
+		return errors.New("interactive h3 has exited; load it again")
+	}
+	if generates {
+		return proc.send(renderSentinel)
+	}
+	return nil
+}
+
+func (r *Runner) runInteractive(job *Job) {
+	p := job.Params
+	if err := r.ensureInteractive(p); err != nil {
+		r.fail(job, err.Error())
+		return
+	}
+	r.events.Emit("interactive", r.InteractiveStatus())
+	inputs, outputs, work, err := r.jobDirs(job)
+	if err != nil {
+		r.fail(job, err.Error())
+		return
+	}
+	defer os.RemoveAll(work)
+
+	// Let manual h3> renders that are still in flight finish first.
+	for waited := time.Duration(0); ; waited += 250 * time.Millisecond {
+		r.imu.Lock()
+		inFlight, proc := r.manualInFlight, r.inter
+		r.imu.Unlock()
+		if inFlight == 0 || proc == nil || !proc.alive() || job.cancelled() || waited > time.Hour {
 			break
 		}
-		s = s[:len(s)-1]
+		time.Sleep(250 * time.Millisecond)
 	}
-	return s
+
+	commands := BuildInteractiveCommands(p, inputs, work)
+	job.set(func(j *Job) {
+		j.Command = commands
+		j.CommandDisplay = "h3> " + strings.Join(commands, "\nh3> ")
+		j.marker = make(chan struct{}, 1)
+	})
+	r.imu.Lock()
+	proc := r.inter
+	if proc == nil || !proc.alive() {
+		r.imu.Unlock()
+		r.fail(job, "interactive h3 has exited; load it again")
+		return
+	}
+	r.interJob = job
+	r.imu.Unlock()
+	defer func() {
+		r.imu.Lock()
+		if r.interJob == job {
+			r.interJob = nil
+		}
+		r.imu.Unlock()
+	}()
+
+	for _, command := range commands {
+		r.jobLog(job, "h3> "+command)
+	}
+	// The sentinel marks the end of this render; the trailing !output points
+	// manual h3> prompts back at the session's outputs.
+	for _, command := range append(commands, renderSentinel, "!output "+outputs) {
+		if err := proc.send(command); err != nil {
+			r.fail(job, "interactive h3 has exited; load it again")
+			return
+		}
+	}
+
+	timeout := time.NewTimer(time.Hour)
+	defer timeout.Stop()
+	select {
+	case <-job.marker:
+	case <-proc.done:
+	case <-timeout.C:
+		r.fail(job, "interactive h3 did not finish within an hour")
+		return
+	}
+	produced := findProducedVideo(work)
+	if produced != "" && !job.cancelled() {
+		r.finishTake(job, produced)
+		return
+	}
+	job.mu.Lock()
+	msg := lastMeaningfulLine(job.tail)
+	job.mu.Unlock()
+	if !proc.alive() && msg == "" {
+		msg = "interactive h3 exited during the render"
+	}
+	if msg == "" {
+		msg = "interactive h3 did not produce an output"
+	}
+	r.fail(job, msg)
+}
+
+func (j *Job) cancelled() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.cancelRequested
+}
+
+// findProducedVideo returns the finished MP4 h3 wrote into a job directory.
+// The sentinel reply can arrive a moment before the muxer closes the file,
+// so it waits briefly for the moov box to appear.
+func findProducedVideo(dir string) string {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*.mp4"))
+		for _, match := range matches {
+			if mp4Finalized(match) {
+				return match
+			}
+		}
+		if len(matches) == 0 || time.Now().After(deadline) {
+			return ""
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// StopInteractive quits the resident h3 process, killing it if needed.
+func (r *Runner) StopInteractive() {
+	r.imu.Lock()
+	proc := r.inter
+	r.imu.Unlock()
+	if proc == nil {
+		return
+	}
+	proc.writeMu.Lock()
+	_, _ = io.WriteString(proc.stdin, "!quit\n")
+	_ = proc.stdin.Close()
+	proc.writeMu.Unlock()
+	select {
+	case <-proc.done:
+		return
+	case <-time.After(5 * time.Second):
+	}
+	stopProcess(proc.cmd)
+	select {
+	case <-proc.done:
+	case <-time.After(5 * time.Second):
+	}
+}
+
+// Shutdown stops everything the runner started.
+func (r *Runner) Shutdown() {
+	r.mu.Lock()
+	proc := r.proc
+	r.mu.Unlock()
+	if proc != nil {
+		stopProcess(proc)
+	}
+	r.StopInteractive()
+	r.shellMu.Lock()
+	shell := r.shellProc
+	r.shellMu.Unlock()
+	if shell != nil {
+		stopProcess(shell)
+	}
+	r.logs.Close()
+}
+
+// ── shell terminal (only with --allow-shell) ────────────────────────────
+
+func (r *Runner) RunShell(session, command string) error {
+	if !r.cfg.AllowShell {
+		return errors.New("the shell terminal is disabled; start h3 studio with --allow-shell to enable it")
+	}
+	if r.Busy() {
+		return errors.New("a render is running or queued")
+	}
+	r.shellMu.Lock()
+	defer r.shellMu.Unlock()
+	if r.shellProc != nil {
+		return errors.New("the terminal is already running a command")
+	}
+	cmd := exec.Command("/bin/sh", "-c", command)
+	cmd.Dir = r.cfg.Workdir()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	cmd.Stdout, cmd.Stderr = writer, writer
+	if err := cmd.Start(); err != nil {
+		reader.Close()
+		writer.Close()
+		return err
+	}
+	writer.Close()
+	r.shellProc = cmd
+	emit := func(line string, running bool) {
+		r.logs.Write(session, line)
+		r.events.Emit("shell", map[string]any{"session": session, "line": line, "running": running})
+	}
+	emit("$ "+command, true)
+	go func() {
+		splitter := &lineSplitter{
+			emit:   func(line string, overwrite bool) {},
+			commit: func(line string) { emit(line, true) },
+		}
+		splitter.readFrom(reader)
+		reader.Close()
+		code := 0
+		if err := cmd.Wait(); err != nil {
+			code = 1
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				code = exit.ExitCode()
+			}
+		}
+		r.shellMu.Lock()
+		r.shellProc = nil
+		r.shellMu.Unlock()
+		emit(fmt.Sprintf("[exit %d]", code), false)
+	}()
+	return nil
+}
+
+// ── line splitting ──────────────────────────────────────────────────────
+
+// lineSplitter splits process output on \n and \r. emit is called for every
+// displayed line, with overwrite=true when a \r update replaces the previous
+// line; commit is called once per line that stays visible (never for lines
+// that were overwritten), in order.
+type lineSplitter struct {
+	emit    func(line string, overwrite bool)
+	commit  func(line string)
+	buf     []byte
+	prevSep byte
+	pending string
+	hasPend bool
+}
+
+func (s *lineSplitter) readFrom(reader io.Reader) {
+	chunk := make([]byte, 64*1024)
+	for {
+		n, err := reader.Read(chunk)
+		if n > 0 {
+			s.feed(chunk[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	s.close()
+}
+
+func (s *lineSplitter) feed(data []byte) {
+	for len(data) > 0 {
+		i := bytes.IndexAny(data, "\r\n")
+		if i < 0 {
+			s.buf = append(s.buf, data...)
+			return
+		}
+		s.buf = append(s.buf, data[:i]...)
+		sep := data[i]
+		data = data[i+1:]
+		s.flush(sep)
+	}
+}
+
+func (s *lineSplitter) flush(sep byte) {
+	line := strings.TrimRight(string(s.buf), " \t")
+	s.buf = s.buf[:0]
+	if strings.TrimSpace(line) == "" {
+		if sep == '\n' && s.hasPend {
+			s.commit(s.pending)
+			s.pending, s.hasPend = "", false
+		}
+		s.prevSep = sep
+		return
+	}
+	overwrite := s.prevSep == '\r' && s.hasPend
+	if s.hasPend && !overwrite {
+		s.commit(s.pending)
+	}
+	s.pending, s.hasPend = "", false
+	s.emit(line, overwrite)
+	if sep == '\r' {
+		s.pending, s.hasPend = line, true
+	} else {
+		s.commit(line)
+	}
+	s.prevSep = sep
+}
+
+func (s *lineSplitter) close() {
+	if strings.TrimSpace(string(s.buf)) != "" {
+		s.flush('\n')
+	}
+	if s.hasPend {
+		s.commit(s.pending)
+		s.pending, s.hasPend = "", false
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func formatSeconds(s float64) string {
+	if s <= 0 {
+		return "0s"
+	}
+	total := int(math.Round(s))
+	if total < 60 {
+		return fmt.Sprintf("%ds", total)
+	}
+	return fmt.Sprintf("%dm%02ds", total/60, total%60)
 }

@@ -1,0 +1,30 @@
+# Optional local hooks: `pre-commit install`. CI runs the same gofmt/vet/test
+# checks, so nothing here is required to contribute.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^h3c/
+      - id: end-of-file-fixer
+        exclude: ^h3c/
+      - id: check-yaml
+      - id: check-json
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -l -w
+        language: system
+        files: \.go$
+        exclude: ^h3c/
+      - id: go-vet
+        name: go vet
+        entry: go vet ./...
+        language: system
+        pass_filenames: false
+        files: \.go$

@@ -31,13 +31,27 @@ Open a [GitHub issue](https://github.com/janishar/h3c-studio/issues) with:
 1. Fork the repo and create a branch off `main`.
 2. Keep the diff focused — one fix or feature per PR is easier to review than
    several bundled together.
-3. Match the existing style: the Go server is intentionally stdlib-only aside
-   from `fsnotify` (see `server/`), and the frontend is plain HTML/CSS/JS with
-   no build step (see `static/`). Please don't introduce a bundler, framework,
-   or new Go dependency without discussing it in an issue first.
-4. Run `go build ./...` and `go vet ./...` before opening a PR.
-5. For UI changes, actually click through the flow in a browser (`--dev` for
-   hot reload) rather than relying on a visual read of the diff.
+3. Match the existing style: the Go server is stdlib-only (see `server/`), and
+   the frontend is plain HTML/CSS/JS with no build step (see `static/`; the
+   scripts share globals and load in the order `index.html` lists them).
+   Please don't introduce a bundler, framework, or Go dependency without
+   discussing it in an issue first. Build DOM with the `el()` helper — never
+   `innerHTML` with data.
+4. Before opening a PR, run:
+
+   ```bash
+   gofmt -l main.go server
+   go vet ./...
+   go test -race ./...
+   node --test static/canvas.test.js
+   ```
+
+   CI runs the same checks plus `staticcheck`. Server tests don't need the
+   model or the h3 binary.
+5. For UI changes, actually click through the flow in a browser (`--dev`
+   serves `static/` from disk, so a refresh picks up edits) rather than
+   relying on a visual read of the diff. Changes to how renders run should be
+   checked with a small real render too.
 
 ## Pull requests
 

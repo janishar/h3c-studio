@@ -1,115 +1,6 @@
-/* h3 studio client */
+/* h3 studio client — form, render bar, progress, terminal, sessions, model. */
 
-const $ = (id) => document.getElementById(id);
-const LEGAL = Array.from({ length: 22 }, (_, n) => 5 + 17 * n);
-const H3_FPS = 24;
-const MAX_PIXELS = 768 * 1344;
-
-/* ── theme (system / light / dark) ────────────────────────────────── */
-
-const THEME_KEY = "h3studio-theme";
-
-function applyTheme(mode) {
-  if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
-  else delete document.documentElement.dataset.theme;
-  [...($("themeSwitch")?.children || [])].forEach((b) => b.classList.toggle("on", b.dataset.theme === mode));
-}
-
-function initTheme() {
-  let saved = "system";
-  try { saved = localStorage.getItem(THEME_KEY) || "system"; } catch (e) {}
-  applyTheme(saved);
-  $("themeSwitch")?.addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-theme]");
-    if (!btn) return;
-    const mode = btn.dataset.theme;
-    applyTheme(mode);
-    try { localStorage.setItem(THEME_KEY, mode); } catch (err) {}
-  });
-}
-initTheme();
-
-// Auto-reload functionality
-(function() {
-  let lastModified = 0;
-  let reloadInterval = null;
-
-  function checkReload() {
-    fetch('/static/style.css')
-      .then(res => {
-        if (!res.ok) return null;
-        const lastModified = res.headers.get('Last-Modified');
-        if (lastModified) {
-          const newModified = new Date(lastModified).getTime();
-          if (newModified > lastModified) {
-            console.log('Stylesheet changed - reloading...');
-            location.reload();
-          }
-        }
-        return res.text();
-      })
-      .catch(err => console.log('Reload check failed:', err));
-  }
-
-  // Check every 30 seconds
-  reloadInterval = setInterval(checkReload, 30000);
-
-  // Reload on tab visibility change
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      checkReload();
-    }
-  });
-
-  // Reload on page visibility
-  document.addEventListener('pagehide', () => {
-    if (reloadInterval) {
-      clearInterval(reloadInterval);
-    }
-  });
-})();
-
-const state = {
-  mode: "ref",
-  refs: [],            // {name, kind}
-  first: null,
-  last: null,
-  inputs: [],
-  outputs: [],
-  selected: null,
-  job: null,
-  cfg: null,
-  preview: {
-    url: null,         // current preview data URL
-    step: 0,
-    total: 0,
-  },
-  previewQueue: [],       // buffered frames awaiting display, min 1s apart
-  previewQueueStep: null, // denoise step the queue's frames belong to
-  previewLastShownAt: 0,
-  previewTimer: null,
-  tick: null,
-  saveTimer: null,
-  promptDoc: [{ type: "text", value: "" }],
-  mention: null,
-  timelineList: [],       // rendered combined videos for the current session
-  selectedTimelineName: null,
-  timelineSeq: [],        // {path, name, duration} clips picked for the sequence being built
-  timelineBrowse: null,   // last /api/timeline/browse response
-  timelineBrowsePath: "",
-  interactiveLoaded: false, // whether "Load h3.c" has started a live interactive process
-};
-
-const SIZES = [
-  ["1:1  (Square)", 1],
-  ["2:3 (Portrait photo)", 2 / 3],
-  ["3:2 (Landscape photo)", 3 / 2],
-  ["3:4 (Portrait standard)", 3 / 4],
-  ["4:3 (Standard)", 4 / 3],
-  ["9:16 (Portrait)", 9 / 16],
-  ["16:9 (Widescreen)", 16 / 9],
-  ["21:9 (Ultrawide)", 21 / 9],
-];
+"use strict";
 
 const QUALITY = [
   ["Draft", { steps: 4, layers: 50, reuse: 1, token: false }],
@@ -117,277 +8,106 @@ const QUALITY = [
   ["Default", { steps: 20, layers: 45, reuse: 2, token: false }],
   ["Reference", { steps: 50, layers: 50, reuse: 1, token: false }],
 ];
+const INTERNAL_SCALES = [1, 0.75, 0.625];
+const THEME_KEY = "h3studio-theme";
+const NOTIFY_KEY = "h3studio-notify";
 
-function slotLabel(refs, index) {
-  const n = refs.slice(0, index + 1).filter((item) => item.kind === refs[index].kind).length;
-  const ref = refs[index];
-  return `${ref.kind === "image" ? "Picture" : ref.kind === "video" ? "Video" : "Audio"} ${n}`;
+/* ── theme ──────────────────────────────────────────────────────── */
+
+function applyTheme(mode) {
+  if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+  else delete document.documentElement.dataset.theme;
+  [...$("themeSwitch").children].forEach((b) => b.classList.toggle("on", b.dataset.theme === mode));
 }
 
-function resolvePrompt(doc, refs) {
-  return doc.map((node) => {
-    if (node.type === "text") return node.value;
-    if (node.type === "lib") return `@${node.name}`;
-    const i = refs.findIndex((ref) => ref.id === node.refId);
-    if (i === -1) throw new Error(`Reference no longer attached: ${node.refId}`);
-    return `<${slotLabel(refs, i)}>`;
-  }).join("");
-}
+/* ── canvas ─────────────────────────────────────────────────────── */
 
-function promptText(doc = state.promptDoc) {
-  return doc.map((node) => node.type === "text" ? node.value : `@${node.type === "lib" ? node.name : node.refId}`).join("");
-}
-
-function renderPromptEditor() {
-  const editor = $("prompt");
-  editor.innerHTML = "";
-  state.promptDoc.forEach((node) => {
-    if (node.type === "text") { editor.append(document.createTextNode(node.value)); return; }
-    if (node.type === "lib") {
-      const chip = document.createElement("span");
-      chip.className = "mention-chip";
-      chip.contentEditable = "false";
-      chip.dataset.libName = node.name;
-      chip.textContent = `@${node.name}`;
-      editor.append(chip);
-      return;
-    }
-    const ref = state.refs.find((item) => item.id === node.refId);
-    const chip = document.createElement("span");
-    chip.className = `mention-chip${ref ? "" : " invalid"}`;
-    chip.contentEditable = "false";
-    chip.dataset.refId = node.refId;
-    chip.textContent = ref ? `@${ref.name} · ${slotLabel(state.refs, state.refs.indexOf(ref))}` : "⚠ removed";
-    editor.append(chip);
-  });
-}
-
-function readPromptEditor() {
-  const doc = [];
-  $("prompt").childNodes.forEach((node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      if (node.nodeValue) doc.push({ type: "text", value: node.nodeValue });
-    } else if (node.nodeType === Node.ELEMENT_NODE && node.dataset.refId) {
-      doc.push({ type: "ref", refId: node.dataset.refId });
-    } else if (node.nodeType === Node.ELEMENT_NODE && node.dataset.libName) {
-      doc.push({ type: "lib", name: node.dataset.libName });
-    } else if (node.textContent) {
-      doc.push({ type: "text", value: node.textContent });
-    }
-  });
-  state.promptDoc = doc.length ? doc : [{ type: "text", value: "" }];
-}
-
-function promptCandidates(query) {
-  const attached = new Set(state.refs.map((ref) => ref.name));
-  return [
-    ...state.refs.map((ref) => ({ ...ref, attached: true })),
-    ...state.inputs.filter((file) => !attached.has(file.name)).map((file) => ({ ...file, attached: false })),
-  ].filter((ref) => ref.name.toLowerCase().includes(query.toLowerCase()));
-}
-
-function closeMentionMenu() {
-  $("mentionMenu").hidden = true;
-  state.mention = null;
-}
-
-function insertMention(ref) {
-  const mention = state.mention;
-  const textNode = mention?.node;
-  if (!textNode || !$("prompt").contains(textNode)) return;
-  const range = document.createRange();
-  range.setStart(textNode, mention.start);
-  range.setEnd(textNode, mention.end);
-  range.deleteContents();
-
-  // Anchors mode has no reference slots to attach to — @-mentions there are
-  // just a name chip in the prompt, not a slot attachment.
-  if (state.mode !== "ref") {
-    const chip = document.createElement("span");
-    chip.className = "mention-chip";
-    chip.contentEditable = "false";
-    chip.dataset.libName = ref.name;
-    chip.textContent = `@${ref.name}`;
-    const space = document.createTextNode(" ");
-    range.insertNode(chip);
-    chip.parentNode.insertBefore(space, chip.nextSibling);
-    const caret = document.createRange();
-    caret.setStart(space, 1);
-    caret.collapse(true);
-    const selection = getSelection();
-    selection.removeAllRanges();
-    selection.addRange(caret);
-    $("prompt").focus();
-    readPromptEditor();
-    closeMentionMenu();
-    sync();
-    return;
-  }
-
-  if (!ref.attached) addRef(ref);
-  const attached = state.refs.find((item) => item.name === ref.name);
-  if (!attached) return;
-  const chip = document.createElement("span");
-  chip.className = "mention-chip";
-  chip.contentEditable = "false";
-  chip.dataset.refId = attached.id;
-  chip.textContent = `@${attached.name} · ${slotLabel(state.refs, state.refs.indexOf(attached))}`;
-  const space = document.createTextNode(" ");
-  range.insertNode(chip);
-  chip.parentNode.insertBefore(space, chip.nextSibling);
-  const caret = document.createRange();
-  caret.setStart(space, 1);
-  caret.collapse(true);
-  const selection = getSelection();
-  selection.removeAllRanges();
-  selection.addRange(caret);
-  $("prompt").focus();
-  state.promptDoc = [];
-  readPromptEditor();
-  closeMentionMenu();
-  sync();
-}
-
-function insertRefAtCaret(ref) {
-  const range = getSelection()?.rangeCount ? getSelection().getRangeAt(0) : null;
-  if (!range || !$("prompt").contains(range.commonAncestorContainer)) {
-    $("prompt").focus();
-    return;
-  }
-  const chip = document.createElement("span");
-  chip.className = "mention-chip";
-  chip.contentEditable = "false";
-  chip.dataset.refId = ref.id;
-  chip.textContent = `@${ref.name} · ${slotLabel(state.refs, state.refs.indexOf(ref))}`;
-  range.deleteContents();
-  range.insertNode(chip);
-  const space = document.createTextNode(" ");
-  chip.parentNode.insertBefore(space, chip.nextSibling);
-  range.setStart(space, 1); range.collapse(true);
-  getSelection().removeAllRanges(); getSelection().addRange(range);
-  $("prompt").focus();
-  readPromptEditor(); sync();
-}
-
-function insertPromptText(text, savedRange = null) {
-  if (!text) return;
-  const selection = getSelection();
-  const range = savedRange || (selection?.rangeCount ? selection.getRangeAt(0) : null);
-  if (!range) return;
-  if (!$("prompt").contains(range.commonAncestorContainer)) return;
-  if (!savedRange) selection.removeAllRanges();
-  range.deleteContents();
-  const node = document.createTextNode(text);
-  range.insertNode(node);
-  range.setStartAfter(node);
-  range.collapse(true);
-  selection.removeAllRanges();
-  selection.addRange(range);
-  readPromptEditor();
-  sync();
-}
-
-/* ── setup ─────────────────────────────────────────────────────── */
-
-function buildChips() {
-  $("sizePresets").innerHTML = "";
-  const custom = document.createElement("option");
-  custom.value = "custom";
-  custom.textContent = "Custom";
-  $("sizePresets").append(custom);
-  SIZES.forEach(([label, ratio]) => {
-    const option = document.createElement("option");
-    option.value = ratio;
-    option.textContent = label;
-    $("sizePresets").append(option);
-  });
-  $("sizePresets").onchange = () => {
-    const selected = SIZES.find(([, ratio]) => String(ratio) === $("sizePresets").value);
-    if (selected) {
-      const ratio = selected[1];
-      $("sizePresets").dataset.ratio = ratio;
-      $("sizePresets").dataset.native = "";
-      $("sizePresets").dataset.preset = "true";
-      setDimensionsForRatio(ratio, +$("megapixels").value);
-    }
-    sync();
-  };
-  $("megapixels").oninput = () => {
-    const ratio = currentAspectRatio();
-    setDimensionsForRatio(ratio, +$("megapixels").value);
-    sync();
-  };
-  document.querySelectorAll("[data-native]").forEach((button) => {
-    button.onclick = () => {
-      const landscape = button.dataset.native === "landscape";
-      $("width").value = landscape ? 1344 : 768;
-      $("height").value = landscape ? 768 : 1344;
-      $("sizePresets").value = "custom";
-      $("sizePresets").dataset.ratio = landscape ? 1344 / 768 : 768 / 1344;
-      $("sizePresets").dataset.native = "true";
-      $("sizePresets").dataset.preset = "";
-      sync();
-    };
-  });
-  $("qualityPresets").innerHTML = "";
-  QUALITY.forEach(([label, q]) => {
-    const b = document.createElement("button");
-    b.textContent = label;
-    b.onclick = () => {
+function buildCanvasControls() {
+  $("aspectSelect").replaceChildren(
+    ...H3_ASPECTS.map(([key, label]) => el("option", { value: key, text: label })),
+    el("option", { value: "input", text: "Match input" }),
+    el("option", { value: "custom", text: "Custom" }));
+  $("qualityPresets").replaceChildren(...QUALITY.map(([label, q]) => el("button", {
+    type: "button", text: label,
+    onclick: () => {
       $("steps").value = q.steps; $("layers").value = q.layers;
       $("reuse").value = q.reuse; $("tokenReduction").checked = q.token;
       sync();
-    };
-    $("qualityPresets").append(b);
-  });
+    },
+  })));
 }
 
-function currentAspectRatio() {
-  const w = +$("width").value, h = +$("height").value;
-  return +$("sizePresets").dataset.ratio || (h ? w / h : 1);
+/** The image whose aspect "Match input" follows: first anchor, else first image reference. */
+function aspectSourceInput() {
+  const name = state.mode === "anchor" ? (state.first || state.last)
+    : state.mode === "ref" ? state.refs.find((ref) => ref.kind === "image")?.name : null;
+  const input = name && state.inputs.find((item) => item.name === name);
+  return input?.probe?.width ? input : null;
 }
 
-function solveCanvas(ratio, megapixels, { aspectWeight = 12 } = {}) {
-  const target = Math.min(megapixels * 1e6, MAX_PIXELS);
-  const base = Math.round(Math.sqrt(target * ratio) / 32);
-  let best = null;
-  for (let k = base - 8; k <= base + 8; k++) {
-    const width = k * 32;
-    if (width < 32) continue;
-    const height = Math.max(32, Math.round(width / ratio / 32) * 32);
-    const pixels = width * height;
-    if (pixels > MAX_PIXELS) continue;
-    const score = aspectWeight * Math.abs((width / height) / ratio - 1)
-      + Math.abs(pixels - target) / target;
-    if (!best || score < best.score) {
-      best = {
-        width, height, pixels, score,
-        actualRatio: width / height,
-        shortEdge: Math.min(width, height),
-      };
-    }
+function currentRatio() {
+  const { aspect, customRatio } = state.canvas;
+  if (aspect === "input") {
+    const source = aspectSourceInput();
+    if (source) return source.probe.width / source.probe.height;
   }
-  return best;
+  return aspectRatioFor(aspect) || customRatio || (+$("width").value / +$("height").value) || 1;
 }
 
-function setDimensionsForRatio(ratio, megapixels) {
-  const result = solveCanvas(ratio, megapixels);
-  if (!result) throw new Error("No legal H3 canvas size matches this aspect ratio.");
+function fitCanvas() {
+  const result = solveCanvas(currentRatio(), +$("megapixels").value);
+  if (!result) return;
   $("width").value = result.width;
   $("height").value = result.height;
 }
 
-function markChips() {
-  const w = +$("width").value, h = +$("height").value;
-  const native = (w === 1344 && h === 768) || (w === 768 && h === 1344);
-  if (native) $("sizePresets").dataset.native = "true";
-  const preset = SIZES.find(([, ratio]) => Math.abs(ratio - w / h) < 1e-9);
-  if (!$("sizePresets").dataset.preset && !native) {
-    $("sizePresets").value = preset ? String(preset[1]) : "custom";
-    if (w && h) $("sizePresets").dataset.ratio = w / h;
+function onAspectChange() {
+  const key = $("aspectSelect").value;
+  if (key === "input" && !aspectSourceInput()) {
+    toast("Add an anchor or image reference first — Match input follows its aspect ratio.");
+    $("aspectSelect").value = state.canvas.aspect;
+    return;
   }
-  if (native) $("sizePresets").value = "custom";
-  $("megapixels").disabled = !!$("sizePresets").dataset.native;
+  if (key === "custom") state.canvas.customRatio = +$("width").value / +$("height").value;
+  state.canvas.aspect = key;
+  if (key !== "custom") fitCanvas();
+  sync();
+}
+
+function onDimensionsTyped() {
+  const w = snapDimension(+$("width").value || 32);
+  const h = snapDimension(+$("height").value || 32);
+  $("width").value = w;
+  $("height").value = h;
+  state.canvas.aspect = matchAspect(w, h, 0.005) || "custom";
+  state.canvas.customRatio = w / h;
+  $("megapixels").value = clampMegapixels((w * h) / 1e6);
+  sync();
+}
+
+function nearestInternal(scale) {
+  return String(INTERNAL_SCALES.reduce((best, s) => (Math.abs(s - scale) < Math.abs(best - scale) ? s : best), 1));
+}
+
+function renderCanvasReadout(p) {
+  const px = p.width * p.height;
+  $("aspectSelect").value = state.canvas.aspect;
+  $("megapixelsValue").textContent = `${(+$("megapixels").value).toFixed(2)} MP`;
+  $("resolvedDimensions").textContent = `${p.width} × ${p.height}`;
+  $("actualMegapixels").textContent = `${(px / 1e6).toFixed(2)} MP`;
+  $("actualRatio").textContent = (p.width / p.height).toFixed(3);
+  const [lw, lh] = latentSize(p.width, p.height);
+  $("latentSize").textContent = `${lw} × ${lh}`;
+  $("sizeWarn").hidden = px <= state.maxPixels;
+  $("sizeWarn").textContent = `${px.toLocaleString()} pixels exceeds the ${state.maxPixels.toLocaleString()} ceiling.`;
+  const source = state.mode === "anchor" ? aspectSourceInput() : null;
+  const mismatch = source ? aspectMismatch(source.probe.width, source.probe.height, p.width, p.height) : 0;
+  $("aspectWarn").hidden = mismatch <= Math.log(1.03);
+  if (!$("aspectWarn").hidden) {
+    $("aspectWarn").textContent = `${source.name} is ${source.probe.width}×${source.probe.height} ` +
+      `(${(source.probe.width / source.probe.height).toFixed(2)}) but the canvas is ${(p.width / p.height).toFixed(2)} — ` +
+      "the anchor will be stretched. Choose Match input.";
+  }
   const s = +$("steps").value, l = +$("layers").value, r = +$("reuse").value;
   [...$("qualityPresets").children].forEach((b, i) => {
     const q = QUALITY[i][1];
@@ -395,33 +115,20 @@ function markChips() {
   });
 }
 
-/* ── derived state ─────────────────────────────────────────────── */
+/* ── params ─────────────────────────────────────────────────────── */
 
-function frames() { return LEGAL[+$("frames").value]; }
-
-function getPreviewMode() {
-  return document.querySelector('input[name="previewMode"]:checked')?.value === "all" ? "all" : "single";
-}
-
-function setPreviewMode(mode) {
-  const id = mode === "all" ? "previewModeAll" : "previewModeSingle";
-  $(id).checked = true;
-}
-
-function syncPreviewModeEnabled() {
-  $("previewModeGroup").classList.toggle("disabled", !$("previewToggle").checked);
-}
+function currentFrames() { return state.legalFrames[+$("frames").value] || state.legalFrames[1]; }
 
 function params() {
-  const scale = +$("internal").value;
   const w = +$("width").value, h = +$("height").value;
-  const ratio = h ? w / h : 1;
+  const scale = +$("internal").value;
   const p = {
+    session_name: state.session,
     label: $("label").value.trim(),
-    session_name: state.cfg?.session || "session-1",
+    mode: state.mode,
     prompt_doc: state.promptDoc,
     width: w, height: h,
-    frames: frames(),
+    frames: currentFrames(),
     steps: +$("steps").value,
     layers: +$("layers").value,
     reuse: +$("reuse").value,
@@ -429,11 +136,12 @@ function params() {
     token_reduction: $("tokenReduction").checked,
     int8_row_fc2: $("int8RowFc2").checked,
     ssd_streaming: $("ssdStreaming").checked,
-    run_mode: $("runMode").value,
+    run_mode: state.runMode,
     preview: $("previewToggle").checked,
-    previewAllFrames: getPreviewMode() === "all",
+    previewAllFrames: $("previewModeAll").checked,
     refs: state.mode === "ref" ? state.refs.map((ref) => ({ ...ref })) : [],
     env: {},
+    extra_args: splitArgs($("extraArgs").value),
   };
   try {
     p.prompt = resolvePrompt(state.promptDoc, p.refs);
@@ -441,12 +149,9 @@ function params() {
     p.prompt = "";
     p.prompt_error = error.message;
   }
-  if (scale < 1) {
-    const internal = solveCanvas(ratio, (w * h / 1000000) * scale * scale);
-    p.render_width = internal.width;
-    p.render_height = internal.height;
-  }
-  if (state.mode !== "ref") {
+  const internal = internalRenderSize(w, h, scale);
+  if (internal) { p.render_width = internal.width; p.render_height = internal.height; }
+  if (state.mode === "anchor") {
     if (state.first) p.first_frame = state.first;
     if (state.last) p.last_frame = state.last;
   }
@@ -456,1778 +161,969 @@ function params() {
   return p;
 }
 
+/** Everything the form holds, including conditioning of the modes not in use. */
+function snapshot() {
+  return {
+    ...params(),
+    ui: {
+      refs: state.refs, first: state.first, last: state.last,
+      aspect: state.canvas.aspect, customRatio: state.canvas.customRatio,
+      megapixels: +$("megapixels").value, internal: +$("internal").value,
+      extraArgs: $("extraArgs").value,
+    },
+  };
+}
+
+function restore(p) {
+  if (!p || typeof p !== "object") return;
+  state.restoring = true;
+  const ui = p.ui || {};
+  state.promptDoc = Array.isArray(p.prompt_doc) && p.prompt_doc.length ? p.prompt_doc : [{ type: "text", value: p.prompt || "" }];
+  $("label").value = p.label || "";
+  const w = p.width || 512, h = p.height || 512;
+  $("width").value = w;
+  $("height").value = h;
+  state.canvas.aspect = ui.aspect || matchAspect(w, h, 0.005) || "custom";
+  state.canvas.customRatio = ui.customRatio || w / h;
+  $("megapixels").value = clampMegapixels(ui.megapixels ?? (w * h) / 1e6);
+  $("internal").value = ui.internal ? nearestInternal(ui.internal) : p.render_width ? nearestInternal(p.render_width / w) : "1";
+  $("steps").value = p.steps || 4;
+  $("layers").value = p.layers || 50;
+  $("reuse").value = p.reuse || 1;
+  $("seed").value = p.seed ?? 42;
+  const frameIndex = state.legalFrames.indexOf(p.frames);
+  $("frames").value = frameIndex >= 0 ? frameIndex : Math.max(0, state.legalFrames.findIndex((f) => f >= (p.frames || 22)));
+  $("tokenReduction").checked = !!p.token_reduction;
+  $("int8RowFc2").checked = !!p.int8_row_fc2;
+  $("ssdStreaming").checked = !!p.ssd_streaming;
+  $("previewToggle").checked = p.preview !== false;
+  $(p.previewAllFrames ? "previewModeAll" : "previewModeSingle").checked = true;
+  $("zeroCopy").checked = p.env ? p.env.H3_ZERO_COPY_WEIGHTS === "0" : true;
+  $("prefetchDepth").value = p.env?.H3_QWEN_PREFETCH_DEPTH || "";
+  $("prefetchWorkers").value = p.env?.H3_QWEN_PREFETCH || "";
+  $("extraArgs").value = ui.extraArgs ?? (p.extra_args || []).join(" ");
+  const refs = Array.isArray(ui.refs) ? ui.refs : Array.isArray(p.refs) ? p.refs : [];
+  state.refs = refs.map((ref, i) => ({
+    id: ref.id || `${Date.now()}-${i}`, name: ref.name, kind: ref.kind,
+    mode: ref.kind === "video" ? (ref.mode || "keep") : undefined,
+    pairedAudio: ref.pairedAudio || null, duration: ref.duration ?? null,
+  }));
+  state.first = ui.first !== undefined ? ui.first : p.first_frame || null;
+  state.last = ui.last !== undefined ? ui.last : p.last_frame || null;
+  const mode = p.mode === "text" || p.mode === "anchor" || p.mode === "ref" ? p.mode
+    : state.refs.length ? "ref" : state.first || state.last ? "anchor" : "text";
+  setMode(mode);
+  setRunMode(p.run_mode === "interactive" ? "interactive" : "oneshot");
+  renderRefs();
+  renderAnchors();
+  renderPromptEditor();
+  syncPreviewModeEnabled();
+  state.restoring = false;
+  sync();
+}
+
 function localErrors(p) {
   const e = [];
-  if (!p.session_name) e.push("Enter a session name.");
   if (p.width % 32 || p.height % 32) e.push("Width and height must be multiples of 32.");
-  if (p.width * p.height > MAX_PIXELS)
-    e.push(`${p.width}×${p.height} is ${(p.width * p.height).toLocaleString()} pixels; the ceiling is ${MAX_PIXELS.toLocaleString()}.`);
+  if (p.width * p.height > state.maxPixels) e.push(`${p.width}×${p.height} exceeds the ${state.maxPixels.toLocaleString()}-pixel ceiling.`);
   if (p.prompt_error) e.push(p.prompt_error);
-  if (!p.prompt) e.push("Write a prompt.");
-  if (state.mode === "ref" && !state.refs.length) e.push("Ref2VA needs at least one reference.");
-  const refs = p.refs || [];
-  const images = refs.filter((r) => r.kind === "image");
-  const videos = refs.filter((r) => r.kind === "video");
-  const audio = refs.filter((r) => r.kind === "audio");
-  const videoDuration = videos.reduce((sum, r) => sum + (Number(r.duration) || 0), 0);
-  const audioDuration = audio.reduce((sum, r) => sum + (Number(r.duration) || 0), 0);
-  if (audio.length && !images.length && !videos.length)
-    e.push("A standalone audio reference must accompany an image or video.");
-  if (images.length > 9) e.push("At most 9 image references.");
-  if (videos.length > 3) e.push("At most 3 video references.");
-  if (audio.length > 3) e.push("At most 3 audio references.");
-  if (videoDuration > 15) e.push(`Combined video reference duration is ${videoDuration.toFixed(1)}s; the limit is 15s.`);
-  if (audioDuration > 15) e.push(`Combined audio reference duration is ${audioDuration.toFixed(1)}s; the limit is 15s.`);
-  if (refs.some((ref) => ref.kind === "video" && ref.mode === "replace" && !ref.pairedAudio))
+  else if (!p.prompt.trim()) e.push("Write a prompt.");
+  if (state.mode === "ref" && !state.refs.length) e.push("Reference mode needs at least one reference.");
+  if (state.mode === "anchor" && !state.first && !state.last) e.push("Set a first or last frame, or switch to Prompt mode.");
+  if (state.refs.some((ref) => state.mode === "ref" && ref.kind === "video" && ref.mode === "replace" && !ref.pairedAudio)) {
     e.push("Choose replacement audio for every video in replace mode.");
-  if (state.mode === "anchor" && !state.first && !state.last)
-    e.push("Set a first or last frame, or switch to Reference mode.");
+  }
   return e;
 }
 
-function commandPreview(p) {
-  const q = (s) => (/[\s"']/.test(s) ? `'${s}'` : s);
-  const env = Object.entries(p.env).map(([k, v]) => `${k}=${v}`).join(" ");
-  const a = ["./h3", "--profile", "-d", q(state.cfg?.model || "MODEL")];
-  a.push("-p", `'${p.prompt.replace(/\n/g, " ").slice(0, 60)}…'`);
-  if (p.preview) a.push("--show", "--preview-mode", "estimate");
-  (p.refs || []).forEach((r) => {
-    if (r.kind === "image") a.push("--ref-image", q(`inputs/${r.name}`));
-    else if (r.kind === "audio") a.push("--ref-audio", q(`inputs/${r.name}`));
-    else if (r.mode === "silent") a.push("--ref-silent-video", q(`inputs/${r.name}`));
-    else if (r.mode === "replace" && r.pairedAudio) {
-      a.push("--ref-video-audio", q(`inputs/${r.name}`), q(`inputs/${r.pairedAudio}`));
-    } else a.push("--ref-video", q(`inputs/${r.name}`));
-  });
-  if (p.first_frame) a.push("--first-frame", q(`inputs/${p.first_frame}`));
-  if (p.last_frame) a.push("--last-frame", q(`inputs/${p.last_frame}`));
-  a.push("--width", p.width, "--height", p.height);
-  if (p.render_width) a.push("--render-width", p.render_width, "--render-height", p.render_height);
-  a.push("--frames", p.frames, "--steps", p.steps, "--layers", p.layers, "--reuse", p.reuse);
-  if (p.token_reduction) a.push("--token-reduction");
-  if (p.ssd_streaming) a.push("--ssd-streaming");
-  else if (p.int8_row_fc2) a.push("--use-int8-row-fc2");
-  a.push("--seed", p.seed, "-o", "outputs/take.mp4");
-  return (env ? env + " \\\n  " : "") + a.join(" ");
+/* ── sync ───────────────────────────────────────────────────────── */
+
+const saveSettings = debounce((session, settings) => {
+  api("/api/session/save", { session, settings }).catch((err) => toast(`Could not save the session: ${err.message}`, { kind: "error" }));
+}, 400);
+
+let commandSeq = 0;
+const refreshCommand = debounce(async (p) => {
+  const seq = ++commandSeq;
+  try {
+    const data = await api("/api/command", p);
+    if (seq !== commandSeq) return;
+    state.serverErrors = data.errors || [];
+    $("cmdPreview").textContent = data.launch ? `# h3.c launch\n${data.launch}\n\n# per render\n${data.display}` : data.display;
+    const est = data.estimate || {};
+    $("estimate").textContent = est.seconds
+      ? `≈ ${fmtSecs(est.seconds)}${est.exact ? "" : " (scaled)"} · ${est.samples} take${est.samples === 1 ? "" : "s"}`
+      : "";
+    $("estimate").title = est.seconds ? "Estimated from this session's finished takes" : "";
+  } catch (err) {
+    if (seq !== commandSeq) return;
+    state.serverErrors = err.data?.errors || [err.message];
+  }
+  renderErrors(p);
+}, 250);
+
+function renderErrors(p = params()) {
+  const errors = [...new Set([...localErrors(p), ...(state.serverErrors || [])])];
+  $("errors").hidden = !errors.length;
+  $("errors").textContent = errors.join("\n");
+  $("render").disabled = errors.length > 0;
+  $("queueBtn").disabled = errors.length > 0;
 }
 
 function sync() {
+  if (state.restoring || !state.session) return;
   const p = params();
-  p.mode = state.mode;
-  clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => {
-    fetch("/api/session/save", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(p),
-    }).catch((err) => appendLog("!! Could not save session: " + err.message));
-  }, 300);
-  const n = frames();
+  const n = p.frames;
   $("frameCount").textContent = n;
-  $("frameSecs").textContent = (n / H3_FPS).toFixed(2) + " s";
-  $("promptCount").textContent = p.prompt.length + " chars";
-  markChips();
-
-  const px = p.width * p.height;
-  $("megapixelsValue").textContent = `${(+$("megapixels").value).toFixed(2)} MP`;
-  $("resolvedDimensions").textContent = `${p.width} × ${p.height}`;
-  $("actualMegapixels").textContent = `${(px / 1000000).toFixed(2)} MP`;
-  $("actualRatio").textContent = (p.width / p.height).toFixed(3);
-  const shortEdge = Math.min(p.width, p.height);
-  $("shortEdge").textContent = `short edge ${shortEdge} · ${shortEdge === 768 ? "native" : "below native"}`;
-  $("sizeWarn").hidden = px <= MAX_PIXELS;
-  $("sizeWarn").textContent = `${px.toLocaleString()} pixels exceeds the ${MAX_PIXELS.toLocaleString()} ceiling.`;
-
-  const errs = localErrors(p);
-  $("errors").hidden = !errs.length;
-  $("errors").textContent = errs.join("\n");
-  $("render").disabled = !!errs.length || state.job?.state === "running";
-  $("cmdPreview").textContent = commandPreview(p);
+  $("frameSecs").textContent = `${(n / H3_FPS).toFixed(2)} s`;
+  $("promptCount").textContent = `${p.prompt.length} chars`;
+  renderCanvasReadout(p);
+  state.serverErrors = [];
+  renderErrors(p);
+  saveSettings(state.session, snapshot());
+  refreshCommand(p);
 }
 
-/* ── references ────────────────────────────────────────────────── */
+function syncPreviewModeEnabled() {
+  $("previewModeGroup").classList.toggle("disabled", !$("previewToggle").checked);
+}
+
+/* ── references ─────────────────────────────────────────────────── */
+
+async function loadInputs() {
+  if (!state.session) return;
+  state.inputs = await api(`/api/inputs?session=${encodeURIComponent(state.session)}`);
+  renderLibrary();
+  renderRefs();
+}
 
 function renderRefs() {
-  const ul = $("refList");
-  ul.innerHTML = "";
-  state.refs.forEach((r, i) => {
-    const li = document.createElement("li");
-    li.draggable = true;
-    li.dataset.kind = r.kind;
-    li.dataset.i = i;
-    const index = state.refs.slice(0, i + 1).filter((ref) => ref.kind === r.kind).length;
-    const label = r.kind === "image" ? `Picture ${index}` : r.kind === "video" ? `Video ${index}` : `Audio ${index}`;
-    li.innerHTML = `<button class="n" type="button">${label}</button>`;
-    if (r.kind === "image") {
-      const img = document.createElement("img");
-      img.src = `/media/input/${encodeURIComponent(r.name)}`;
-      li.append(img);
-    }
-    const nm = document.createElement("span");
-    nm.className = "nm"; nm.textContent = r.name;
-    const x = document.createElement("button");
-    x.textContent = "×"; x.title = "Remove";
-    x.onclick = (e) => { e.stopPropagation(); state.refs.splice(i, 1); renderRefs(); renderPromptEditor(); sync(); };
-    li.querySelector(".n").onclick = (e) => {
-      e.stopPropagation();
-      insertRefAtCaret(r);
-    };
-    if (r.duration != null) {
-      const duration = document.createElement("span");
-      duration.className = "duration";
-      duration.textContent = `${Number(r.duration).toFixed(1)}s`;
-      li.append(duration);
-    }
-    if (r.kind === "video") {
-      const mode = document.createElement("select");
-      mode.className = "refmode";
-      [["keep", "keep audio"], ["silent", "silent"], ["replace", "replace audio"]]
-        .forEach(([value, text]) => {
-          const option = document.createElement("option");
-          option.value = value; option.textContent = text; option.selected = (r.mode || "keep") === value;
-          mode.append(option);
-        });
-      mode.onchange = (e) => { r.mode = e.target.value; sync(); };
-      li.append(mode);
-      if (r.mode === "replace") {
-        const audio = document.createElement("select");
-        audio.className = "refmode";
-        audio.innerHTML = '<option value="">audio file…</option>';
-        state.inputs.filter((file) => file.kind === "audio").forEach((file) => {
-          const option = document.createElement("option");
-          option.value = file.name; option.textContent = file.name; option.selected = r.pairedAudio === file.name;
-          audio.append(option);
-        });
-        audio.onchange = (e) => { r.pairedAudio = e.target.value || null; sync(); };
-        li.append(audio);
-      }
-    }
-    li.append(nm, x);
-
-    li.ondragstart = (e) => { li.classList.add("dragging"); e.dataTransfer.setData("text/plain", i); };
-    li.ondragend = () => li.classList.remove("dragging");
-    li.ondragover = (e) => e.preventDefault();
-    li.ondrop = (e) => {
-      e.preventDefault();
-      const from = +e.dataTransfer.getData("text/plain");
-      const [moved] = state.refs.splice(from, 1);
-      state.refs.splice(i, 0, moved);
-      renderRefs(); sync();
-    };
-    ul.append(li);
-  });
   const counts = { image: 0, video: 0, audio: 0 };
   const durations = { video: 0, audio: 0 };
   state.refs.forEach((ref) => {
     counts[ref.kind]++;
-    if (ref.kind === "video" || ref.kind === "audio") durations[ref.kind] += Number(ref.duration) || 0;
+    if (ref.kind in durations) durations[ref.kind] += Number(ref.duration) || 0;
   });
-  $("refHint").hidden = false;
-  $("refHint").innerHTML =
-    `Pictures ${counts.image}/9 · Videos ${counts.video}/3 (${durations.video.toFixed(1)}/15.0s) · ` +
-    `Audio ${counts.audio}/3 (${durations.audio.toFixed(1)}/15.0s) · Click a label to insert it.`;
+  $("refList").replaceChildren(...state.refs.map((ref, i) => {
+    const audioFiles = state.inputs.filter((file) => file.kind === "audio");
+    const li = el("li", { draggable: true, dataset: { kind: ref.kind } },
+      el("button", { class: "n", type: "button", text: slotLabel(state.refs, i), title: "Insert this label at the prompt caret",
+        onclick: (e) => { e.stopPropagation(); insertRefAtCaret(ref); } }),
+      ref.kind === "image" ? el("img", { src: mediaURL(`inputs/${ref.name}`), alt: "" }) : null,
+      ref.duration != null ? el("span", { class: "duration", text: `${Number(ref.duration).toFixed(1)}s` }) : null,
+      ref.kind === "video" ? el("select", { class: "refmode", "aria-label": "Video audio handling",
+        onchange: (e) => { ref.mode = e.target.value; renderRefs(); sync(); } },
+        [["keep", "keep audio"], ["silent", "silent"], ["replace", "replace audio"]].map(([value, text]) =>
+          el("option", { value, text, selected: (ref.mode || "keep") === value }))) : null,
+      ref.kind === "video" && ref.mode === "replace" ? el("select", { class: "refmode", "aria-label": "Replacement audio",
+        onchange: (e) => { ref.pairedAudio = e.target.value || null; sync(); } },
+        el("option", { value: "", text: "audio file…" }),
+        audioFiles.map((file) => el("option", { value: file.name, text: file.name, selected: ref.pairedAudio === file.name }))) : null,
+      el("span", { class: "nm", text: ref.name, title: ref.name }),
+      el("button", { type: "button", text: "×", title: "Remove reference",
+        onclick: (e) => { e.stopPropagation(); state.refs.splice(i, 1); renderRefs(); renderPromptEditor(); sync(); } }));
+    li.addEventListener("dragstart", (e) => { li.classList.add("dragging"); e.dataTransfer.setData("text/plain", String(i)); });
+    li.addEventListener("dragend", () => li.classList.remove("dragging"));
+    li.addEventListener("dragover", (e) => e.preventDefault());
+    li.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const from = +e.dataTransfer.getData("text/plain");
+      if (Number.isNaN(from) || from === i) return;
+      const [moved] = state.refs.splice(from, 1);
+      state.refs.splice(i, 0, moved);
+      renderRefs(); renderPromptEditor(); sync();
+    });
+    return li;
+  }));
+  $("refHint").textContent = `Pictures ${counts.image}/9 · Videos ${counts.video}/3 (${durations.video.toFixed(1)}/15.0s) · ` +
+    `Audio ${counts.audio}/3 (${durations.audio.toFixed(1)}/15.0s) · Order sets <Picture N>; drag to reorder, click a label to insert it.`;
 }
 
 function renderLibrary() {
-  const wrap = $("library");
-  wrap.innerHTML = "";
-  state.inputs.forEach((f) => {
-    const fig = document.createElement("figure");
-    fig.title = f.name;
-    if (f.kind === "image") {
-      const img = document.createElement("img");
-      img.src = `/media/input/${encodeURIComponent(f.name)}`;
-      img.alt = f.name;
-      fig.append(img);
-    } else {
-      if (f.kind === "video") {
-        const video = document.createElement("video");
-        video.src = `/media/input/${encodeURIComponent(f.name)}`;
-        video.muted = true;
-        video.preload = "metadata";
-        video.playsInline = true;
-        video.setAttribute("aria-hidden", "true");
-        forceThumbFrame(video);
-        fig.append(video);
-      } else {
-        const d = document.createElement("div");
-        d.className = "nonimg"; d.textContent = f.kind;
-        fig.append(d);
-      }
-      const playBtn = document.createElement("button");
-      playBtn.className = "play-input";
-      playBtn.type = "button";
-      playBtn.title = `Play ${f.name}`;
-      playBtn.textContent = "▶";
-      playBtn.onclick = (e) => { e.stopPropagation(); playInput(f.name); };
-      fig.append(playBtn);
-    }
-    const delBtn = document.createElement("button");
-    delBtn.className = "delete-file";
-    delBtn.type = "button";
-    delBtn.title = "Delete input";
-    delBtn.textContent = "×";
-    delBtn.onclick = (e) => { e.stopPropagation(); deleteRef(f.name, f.kind); };
-    fig.append(delBtn);
-    fig.onclick = () => addRef(f);
-    wrap.append(fig);
-  });
+  $("library").replaceChildren(...state.inputs.map((file) => {
+    const probe = file.probe || {};
+    const details = [file.name, probe.width ? `${probe.width}×${probe.height}` : "", file.duration ? `${file.duration.toFixed(1)}s` : ""].filter(Boolean).join(" · ");
+    const used = state.refs.some((ref) => ref.name === file.name) || state.first === file.name || state.last === file.name;
+    return el("figure", { class: used ? "used" : "", title: `${details}\nClick to use`, onclick: () => addRef(file) },
+      file.kind === "image" ? el("img", { src: file.url, alt: file.name, loading: "lazy" })
+        : file.kind === "video" ? el("img", { src: file.thumb, alt: file.name, loading: "lazy" })
+          : el("div", { class: "nonimg", text: `♪ ${file.name}` }),
+      file.kind !== "image" ? el("button", { class: "play-input", type: "button", title: `Play ${file.name}`, text: "▶",
+        onclick: (e) => { e.stopPropagation(); state.selected = null; showVideo(file.url, details); renderTakes(); } }) : null,
+      file.duration ? el("span", { class: "badge", text: `${file.duration.toFixed(1)}s` }) : null,
+      el("button", { class: "delete-file", type: "button", title: "Delete input", text: "×",
+        onclick: (e) => { e.stopPropagation(); deleteMedia(file.name, "input").catch((err) => toast(err.message, { kind: "error" })); } }));
+  }));
 }
 
-function playInput(name) {
-  state.selected = null;
-  state.selectedTimelineName = null;
-  const v = $("player");
-  clearPreview();
-  v.pause();
-  v.muted = false;
-  v.volume = 1;
-  v.src = `/media/input/${encodeURIComponent(name)}`;
-  v.load();
-  v.classList.add("on");
-  $("previewImg").classList.remove("on");
-  $("previewImg").hidden = true;
-  $("viewerEmpty").hidden = true;
-  v.play().catch((error) => appendLog("!! Playback did not start automatically: " + error.message));
-  renderTakes();
-  renderTimelineList();
-}
-
-async function deleteFile(name, kind) {
-  const message = kind === "output"
-    ? `Permanently delete this take and its video file?\n${name}\n\nThis cannot be undone.`
-    : `Delete this ${kind} file?\n${name}`;
-  if (!confirm(message)) return;
-  const res = await fetch("/api/delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, kind }),
-  });
-  const data = await res.json();
-  if (data.error) { appendLog("!! " + data.error); return; }
-  state.inputs = data.inputs || [];
-  state.outputs = data.outputs || [];
-  if (data.timeline) state.timelineList = data.timeline;
-  state.refs = state.refs.filter((ref) => !(["image", "video", "audio"].includes(kind) && ref.name === name));
-  if (state.first === name) state.first = null;
-  if (state.last === name) state.last = null;
-  if (kind === "output" && state.selected === name) {
-    state.selected = null;
-    $("player").removeAttribute("src");
-    $("player").classList.remove("on");
-    $("viewerEmpty").hidden = false;
+/** Put an input into the current mode's next slot. Returns true when added. */
+function addRef(file) {
+  if (state.mode === "text") {
+    toast("Prompt mode has no reference slots — switch to Anchors or References, or mention the file with @.");
+    return false;
   }
-  if (kind === "timeline" && state.selectedTimelineName === name) {
-    state.selectedTimelineName = null;
-    $("player").removeAttribute("src");
-    $("player").classList.remove("on");
-    $("viewerEmpty").hidden = false;
-  }
-  renderLibrary(); renderRefs(); renderPromptEditor(); renderAnchors(); renderTakes(); renderTimelineList(); sync();
-}
-
-async function deleteRef(name, kind) {
-  const message = `Delete this ${kind} reference?\n${name}\n\nThis will also delete the file from the directory.`;
-  if (!confirm(message)) return;
-  const res = await fetch("/api/delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, kind }),
-  });
-  const data = await res.json();
-  if (data.error) { appendLog("!! " + data.error); return; }
-  state.inputs = data.inputs || [];
-  state.outputs = data.outputs || [];
-  state.refs = state.refs.filter((ref) => !(["image", "video", "audio"].includes(kind) && ref.name === name));
-  if (state.first === name) state.first = null;
-  if (state.last === name) state.last = null;
-  renderLibrary(); renderRefs(); renderPromptEditor(); renderAnchors(); renderTakes(); sync();
-}
-
-function addRef(f) {
   if (state.mode === "anchor") {
-    if (f.kind !== "image") return;
-    if (!state.first) state.first = f.name;
-    else state.last = f.name;
-    renderAnchors();
-  } else {
-    if (state.refs.length >= 12) return;
-    if (state.refs.some((ref) => ref.name === f.name)) return;
-    const count = state.refs.filter((ref) => ref.kind === f.kind).length;
-    const limit = f.kind === "image" ? 9 : 3;
-    if (count >= limit) return;
-    const duration = Number(f.duration) || 0;
-    if ((f.kind === "video" || f.kind === "audio") && duration && (duration < 2 || duration > 15)) {
-      if (duration > 15) {
-        offerTrim(f);
-      } else {
-        appendLog(`!! ${f.name} is ${duration.toFixed(1)}s; Ref2VA needs at least 2s.`);
-      }
-      return;
-    }
-    if (f.kind === "video" || f.kind === "audio") {
-      const usedDuration = state.refs
-        .filter((ref) => ref.kind === f.kind)
-        .reduce((sum, ref) => sum + (Number(ref.duration) || 0), 0);
-      if (usedDuration + duration > 15) {
-        appendLog(`!! Combined ${f.kind} reference duration cannot exceed 15 seconds.`);
-        return;
-      }
-    }
-    state.refs.push({
-      id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
-      name: f.name, kind: f.kind, mode: f.kind === "video" ? "keep" : undefined,
-      pairedAudio: null, duration: f.duration ?? null,
-    });
-    renderRefs();
+    if (file.kind !== "image") { toast("Anchors must be images.", { kind: "error" }); return false; }
+    if (!state.first) state.first = file.name;
+    else state.last = file.name;
+    renderAnchors(); renderLibrary(); sync();
+    return true;
   }
-  sync();
+  if (state.refs.some((ref) => ref.name === file.name)) { toast(`${file.name} is already a reference.`); return false; }
+  const count = state.refs.filter((ref) => ref.kind === file.kind).length;
+  const limit = file.kind === "image" ? 9 : 3;
+  if (count >= limit) { toast(`At most ${limit} ${file.kind} references.`, { kind: "error" }); return false; }
+  const duration = Number(file.duration) || 0;
+  if ((file.kind === "video" || file.kind === "audio") && duration && (duration < 2 || duration > 15)) {
+    if (duration > 15) offerTrim(file);
+    else toast(`${file.name} is ${duration.toFixed(1)}s; Ref2VA needs at least 2s.`, { kind: "error" });
+    return false;
+  }
+  if (file.kind === "video" || file.kind === "audio") {
+    const used = state.refs.filter((ref) => ref.kind === file.kind).reduce((sum, ref) => sum + (Number(ref.duration) || 0), 0);
+    if (used + duration > 15) { toast(`Combined ${file.kind} reference duration can't exceed 15 seconds.`, { kind: "error" }); return false; }
+  }
+  state.refs.push({
+    id: uid(), name: file.name, kind: file.kind, mode: file.kind === "video" ? "keep" : undefined,
+    pairedAudio: null, duration: file.duration ?? null,
+  });
+  renderRefs(); renderLibrary(); sync();
+  return true;
 }
 
-async function offerTrim(f) {
-  const duration = Number(f.duration) || 0;
+async function offerTrim(file) {
+  const duration = Number(file.duration) || 0;
   const maxStart = Math.max(0, duration - 2);
-  const startInput = prompt(
-    `${f.name} is ${duration.toFixed(1)}s; Ref2VA references must be 2-15s.\n` +
-    `Trim starting at (seconds, 0-${maxStart.toFixed(1)}):`,
-    "0",
-  );
-  if (startInput === null) return;
-  const start = Math.min(Math.max(Number(startInput) || 0, 0), maxStart);
-  const length = Math.min(14.8, duration - start);
-  const res = await fetch("/api/trim", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: f.name, start, length }),
-  });
-  const data = await res.json();
-  if (data.error) { appendLog("!! " + data.error); return; }
-  if (data.inputs) { state.inputs = data.inputs; renderLibrary(); }
-  if (data.name) addRef({ name: data.name, kind: f.kind, duration: data.duration });
+  const answer = prompt(`${file.name} is ${duration.toFixed(1)}s; Ref2VA references must be 2–15s.\nTrim starting at (seconds, 0–${maxStart.toFixed(1)}):`, "0");
+  if (answer === null) return;
+  const start = Math.min(Math.max(Number(answer) || 0, 0), maxStart);
+  try {
+    const data = await api("/api/trim", { session: state.session, name: file.name, start, length: Math.min(14.8, duration - start) });
+    state.inputs = data.inputs;
+    renderLibrary();
+    addRef({ name: data.name, kind: data.kind || file.kind, duration: data.duration });
+  } catch (err) {
+    toast(err.message, { kind: "error" });
+  }
 }
 
 function renderAnchors() {
-  $("anchorFirst").querySelector("em").textContent = state.first || "none";
-  $("anchorFirst").classList.toggle("set", !!state.first);
-  $("anchorLast").querySelector("em").textContent = state.last || "none";
-  $("anchorLast").classList.toggle("set", !!state.last);
+  for (const [id, name] of [["anchorFirst", state.first], ["anchorLast", state.last]]) {
+    $(id).querySelector("em").textContent = name || "none";
+    $(id).classList.toggle("set", !!name);
+  }
 }
 
-async function useRef(o) {
-  if (state.mode === "anchor") {
-    appendLog("!! Cannot add video to anchors. Switch to Reference mode.");
-    return;
-  }
-
-  const videoCount = state.refs.filter((ref) => ref.kind === "video").length;
-  if (videoCount >= 3) {
-    appendLog("!! Maximum 3 video references allowed.");
-    return;
-  }
-
-  // Takes live in outputs/, but refs are read from inputs/ — copy it over first.
-  const res = await fetch("/api/use-ref", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: o.name }),
+function setMode(mode) {
+  state.mode = mode;
+  [...$("modeSwitch").children].forEach((b) => {
+    b.classList.toggle("on", b.dataset.mode === mode);
+    b.setAttribute("aria-checked", String(b.dataset.mode === mode));
   });
-  const data = await res.json();
-  if (data.error) {
-    appendLog("!! " + data.error);
-    return;
-  }
-  if (data.inputs) { state.inputs = data.inputs; renderLibrary(); }
-
-  state.refs.push({
-    id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
-    name: data.name,
-    kind: "video",
-    mode: "keep",
-    pairedAudio: null,
-    duration: data.duration ?? o.meta?.params?.duration_s ?? null,
-  });
-
-  renderRefs();
-  sync();
-  appendLog(`Added ${data.name} to references as Video ${videoCount + 1}.`);
+  $("refMode").hidden = mode !== "ref";
+  $("anchorMode").hidden = mode !== "anchor";
+  $("textModeHint").hidden = mode !== "text";
+  const noRef2va = state.cfg && !state.cfg.model_info?.has_ref2va;
+  $("modeUnavailable").hidden = !(mode === "ref" && noRef2va);
+  $("modeUnavailable").textContent = "References need the Ref2VA pipeline, which the model directory doesn't have. Open Model to check the setup.";
+  closeMentionMenu();
+  renderLibrary();
 }
 
-async function useFrame(o) {
-  appendLog(`Extracting last frame from ${o.name}...`);
-  const res = await fetch("/api/frame", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: o.name }),
-  });
-  const data = await res.json();
-  if (data.error) {
-    appendLog(`!! Failed to extract frame: ${data.error}`);
-    return;
-  }
-  
-  // Check if frame already exists in refs
-  const existingFrame = state.refs.find((ref) => ref.kind === "image" && ref.name === data.name);
-  if (existingFrame) {
-    appendLog(`!! Frame ${data.name} is already in references.`);
-    return;
-  }
-  
-  if (state.mode === "anchor") {
-    if (!state.first) state.first = data.name;
-    else state.last = data.name;
-    renderAnchors();
-    appendLog(`Added ${data.name} to anchors as ${state.first === data.name ? "first" : "last"} frame.`);
-    
-    // Also add to library so it persists
-    state.inputs.push({
-      name: data.name,
-      kind: "image",
-      duration: null
-    });
-    renderLibrary();
-  } else {
-    // Check limits
-    const imageCount = state.refs.filter((ref) => ref.kind === "image").length;
-    if (imageCount >= 9) {
-      appendLog("!! Maximum 9 image references allowed.");
-      return;
-    }
-    
-    state.refs.push({
-      id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`,
-      name: data.name,
-      kind: "image",
-    });
-    
-    // Add the extracted frame to inputs so it persists and shows in library
-    state.inputs.push({
-      name: data.name,
-      kind: "image",
-      duration: null
-    });
-    
-    renderRefs();
-    renderLibrary();
-    appendLog(`Added ${data.name} to references as Picture ${imageCount + 1}.`);
-  }
-  
-  sync();
-}
-
-/* ── uploads ───────────────────────────────────────────────────── */
-
-async function upload(files) {
-  for (const f of files) {
-    const buf = await f.arrayBuffer();
-    const res = await fetch("/api/upload", {
-      method: "POST",
-      headers: { "X-Filename": encodeURIComponent(f.name) },
-      body: buf,
-    });
-    const data = await res.json();
-    if (data.inputs) { state.inputs = data.inputs; renderLibrary(); }
-    if (data.name) {
-      const kind = /\.(png|jpe?g|webp)$/i.test(data.name) ? "image"
-        : /\.(mp4|mov)$/i.test(data.name) ? "video" : "audio";
-      addRef({ ...data, kind });
+async function uploadFiles(files) {
+  for (const file of files) {
+    try {
+      const res = await fetch(`/api/upload?session=${encodeURIComponent(state.session)}`, {
+        method: "POST", headers: { "X-Filename": encodeURIComponent(file.name) }, body: file,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error || `upload failed (HTTP ${res.status})`);
+      state.inputs = data.inputs;
+      renderLibrary();
+      if (state.mode !== "text") addRef({ name: data.name, kind: data.kind, duration: data.duration, probe: data.probe });
+    } catch (err) {
+      toast(`${file.name}: ${err.message}`, { kind: "error" });
     }
   }
 }
 
-/* ── takes ─────────────────────────────────────────────────────── */
+/* ── render ─────────────────────────────────────────────────────── */
 
-function renderTakes() {
-  const ul = $("takes");
-  ul.innerHTML = "";
-  $("takeCount").textContent = state.outputs.length;
-  state.outputs.forEach((o) => {
-    const li = document.createElement("li");
-    li.classList.toggle("on", state.selected === o.name);
-    const p = o.meta?.params || {};
-    const secs = o.meta?.duration_s;
-
-    const row = document.createElement("div");
-    row.className = "row";
-    const thumb = document.createElement("div");
-    thumb.className = "thumb";
-    const video = document.createElement("video");
-    video.src = `/media/output/${encodeURIComponent(o.name)}`;
-    video.muted = true;
-    video.preload = "metadata";
-    video.playsInline = true;
-    video.setAttribute("aria-hidden", "true");
-    forceThumbFrame(video);
-    thumb.append(video);
-    const info = document.createElement("div");
-    info.className = "info";
-    info.innerHTML = `<div class="nm">${o.name}</div>
-      <div class="meta">${p.width || "?"}×${p.height || "?"} · ${p.frames || "?"}f · ${p.steps || "?"} steps · seed ${p.seed ?? "?"}${secs ? " · " + secs + "s" : ""}</div>`;
-    row.append(thumb, info);
-    li.append(row);
-
-    const ops = document.createElement("div");
-    ops.className = "ops";
-    ops.append(
-      mkBtn("Reuse settings", () => restore(o)),
-      mkBtn("Use ref", () => useRef(o)),
-      mkBtn("Use Frame", () => useFrame(o)),
-    );
-    const menuBtn = document.createElement("button");
-    menuBtn.className = "ghost";
-    menuBtn.textContent = "⋮";
-    menuBtn.title = "More options";
-    menuBtn.onclick = (e) => {
-      e.stopPropagation();
-      const existingMenu = li.querySelector(".take-menu");
-      if (existingMenu) {
-        existingMenu.remove();
-        return;
-      }
-      const menu = document.createElement("div");
-      menu.className = "take-menu";
-      menu.innerHTML = `
-        <button type="button" class="menu-item" data-action="chain">Chain →</button>
-        <button type="button" class="menu-item" data-action="delete">Delete</button>
-      `;
-      menu.onclick = (e) => {
-        if (e.target.classList.contains("menu-item")) {
-          const action = e.target.dataset.action;
-          if (action === "chain") chain(o.name);
-          else if (action === "delete") deleteFile(o.name, "output");
-          menu.remove();
-        }
-      };
-      menu.onmouseleave = () => menu.remove();
-      li.append(menu);
-    };
-    ops.append(menuBtn);
-    li.append(ops);
-    li.onclick = (e) => { if (e.target.tagName !== "BUTTON") select(o.name); };
-    ul.append(li);
-  });
-}
-
-function forceThumbFrame(video) {
-  // A muted <video preload="metadata"> often paints nothing until it's
-  // seeked, even once its data is fully loaded — force a tiny seek so the
-  // thumbnail always shows an actual frame instead of staying black.
-  if (!video) return;
-  video.addEventListener("loadedmetadata", () => {
-    try { video.currentTime = Math.min(0.1, (video.duration || 0.2) / 2); } catch (e) {}
-  }, { once: true });
-}
-
-function mkBtn(label, fn) {
-  const b = document.createElement("button");
-  b.className = "ghost"; b.textContent = label;
-  b.onclick = (e) => { e.stopPropagation(); fn(); };
-  return b;
-}
-
-function select(name) {
-  state.selected = name;
-  state.selectedTimelineName = null;
-  const v = $("player");
-  clearPreview();
-  v.pause();
-  v.muted = false;
-  v.volume = 1;
-  v.src = `/media/output/${encodeURIComponent(name)}`;
-  v.load();
-  v.classList.add("on");
-  $("previewImg").classList.remove("on");
-  $("previewImg").hidden = true;
-  $("viewerEmpty").hidden = true;
-  v.play().catch((error) => appendLog("!! Playback did not start automatically: " + error.message));
-  renderTakes();
-  renderTimelineList();
-}
-
-/* ── timeline (combined clips) ────────────────────────────────────── */
-
-function renderTimelineList() {
-  const ul = $("timelineList");
-  if (!ul) return;
-  ul.innerHTML = "";
-  $("timelineCount").textContent = state.timelineList.length;
-  if (state.timelineList.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "timelist-empty";
-    empty.textContent = "No combined videos yet. Use the Timeline button above to build one.";
-    ul.append(empty);
-    return;
-  }
-  state.timelineList.forEach((o) => {
-    const li = document.createElement("li");
-    li.classList.toggle("on", state.selectedTimelineName === o.name);
-    const secs = o.meta?.clips?.length;
-
-    const row = document.createElement("div");
-    row.className = "row";
-    const thumb = document.createElement("div");
-    thumb.className = "thumb";
-    const video = document.createElement("video");
-    video.src = `/media/timeline/${encodeURIComponent(o.name)}`;
-    video.muted = true;
-    video.preload = "metadata";
-    video.playsInline = true;
-    video.setAttribute("aria-hidden", "true");
-    forceThumbFrame(video);
-    thumb.append(video);
-    const info = document.createElement("div");
-    info.className = "info";
-    info.innerHTML = `<div class="nm">${o.name}</div>
-      <div class="meta">${secs ? secs + " clips" : "combined"}</div>`;
-    row.append(thumb, info);
-    li.append(row);
-
-    const ops = document.createElement("div");
-    ops.className = "ops";
-    ops.append(mkBtn("Delete", () => deleteFile(o.name, "timeline")));
-    li.append(ops);
-    li.onclick = (e) => { if (e.target.tagName !== "BUTTON") selectTimeline(o.name); };
-    ul.append(li);
-  });
-}
-
-function selectTimeline(name) {
-  state.selectedTimelineName = name;
-  state.selected = null;
-  const v = $("player");
-  v.pause();
-  v.muted = false;
-  v.volume = 1;
-  v.src = `/media/timeline/${encodeURIComponent(name)}`;
-  v.load();
-  v.classList.add("on");
-  $("viewerEmpty").hidden = true;
-  v.play().catch((error) => appendLog("!! Playback did not start automatically: " + error.message));
-  renderTakes();
-  renderTimelineList();
-}
-
-function restore(o) {
-  const p = o.meta?.params;
-  if (!p) return;
-  state.promptDoc = Array.isArray(p.prompt_doc) ? p.prompt_doc : [{ type: "text", value: p.prompt || "" }];
-  $("width").value = p.width; $("height").value = p.height;
-  const megapixels = (p.width * p.height) / 1e6;
-  const mpInput = $("megapixels");
-  mpInput.value = Math.min(+mpInput.max, Math.max(+mpInput.min, megapixels)).toFixed(2);
-  $("steps").value = p.steps; $("layers").value = p.layers;
-  $("reuse").value = p.reuse || 1; $("seed").value = p.seed;
-  $("tokenReduction").checked = !!p.token_reduction;
-  $("previewToggle").checked = p.preview !== false;
-  setPreviewMode(p.previewAllFrames ? "all" : "single");
-  syncPreviewModeEnabled();
-  $("frames").value = Math.max(0, LEGAL.indexOf(p.frames));
-  state.refs = (p.refs || [
-    ...(p.ref_images || []).map((name) => ({ name, kind: "image" })),
-    ...(p.ref_videos || []).map((clip) => ({ name: clip.name, kind: "video", mode: clip.silent ? "silent" : "keep" })),
-    ...(p.ref_audio || []).map((name) => ({ name, kind: "audio" })),
-  ]).map((ref, i) => ({
-    id: ref.id || `${Date.now()}-${i}`, pairedAudio: ref.pairedAudio || null,
-    duration: ref.duration ?? null, ...ref,
+async function submit(count = 1) {
+  if ($("render").disabled) return;
+  saveSettings.flush();
+  const base = params();
+  const jobs = count === 1 ? [base] : Array.from({ length: count }, (_, i) => ({
+    ...base, seed: randomSeed(), label: `${base.label || "take"}-${i + 1}`,
   }));
-  state.first = p.first_frame || null; state.last = p.last_frame || null;
-  setMode(state.first || state.last ? "anchor" : "ref");
-  renderRefs(); renderPromptEditor(); renderAnchors(); sync();
+  try {
+    const data = await api("/api/render", { jobs });
+    state.followPreview = true;
+    if (count > 1) trackCompareBatch(data.jobs.map((job) => job.id));
+  } catch (err) {
+    $("errors").hidden = false;
+    $("errors").textContent = err.message;
+  }
 }
 
-async function chain(name) {
-  const res = await fetch("/api/chain", {
-    method: "POST", body: JSON.stringify({ name }),
+function setRunMode(mode) {
+  state.runMode = mode;
+  [...$("runModeSwitch").children].forEach((b) => {
+    b.classList.toggle("on", b.dataset.run === mode);
+    b.setAttribute("aria-checked", String(b.dataset.run === mode));
   });
-  const data = await res.json();
-  if (data.error) { alert(data.error); return; }
-  state.inputs = data.inputs;
-  setMode("anchor");
-  state.first = data.name;
-  state.last = null;
-  renderLibrary(); renderAnchors(); sync();
+  $("render").firstChild.textContent = mode === "interactive" ? "Send to h3.c " : "Render ";
+  renderInteractive();
 }
 
-/* ── rendering ─────────────────────────────────────────────────── */
-
-async function submit(p) {
-  // Hide any currently-shown take/preview immediately so the viewer doesn't
-  // keep displaying stale content while the new render starts up.
-  $("player").classList.remove("on");
-  $("previewImg").classList.remove("on");
-  $("previewImg").hidden = true;
-  $("viewerEmpty").hidden = false;
-  clearPreview();
-  appendLog("$ " + commandPreview(p));
-  const res = await fetch("/api/render", { method: "POST", body: JSON.stringify(p) });
-  const data = await res.json();
-  if (data.errors) { $("errors").hidden = false; $("errors").textContent = data.errors.join("\n"); }
+function renderInteractive() {
+  const loaded = !!state.interactive?.loaded;
+  $("interPill").hidden = state.runMode !== "interactive" && !loaded;
+  $("interPill").classList.toggle("on", loaded);
+  $("interText").textContent = loaded ? "h3.c loaded" : "h3.c not loaded · loads on first send";
+  $("interToggle").textContent = loaded ? "Unload" : "Load h3.c";
+  $("interactiveForm").hidden = !loaded;
 }
 
-function showJob(j) {
-  state.job = j;
-  const busy = j && (j.state === "running" || j.state === "cancelling");
-  $("running").hidden = !busy;
-  $("lamp").classList.toggle("busy", !!busy);
-  $("lampText").textContent = busy ? (j.phase || "rendering") : "idle";
-  $("render").disabled = !!busy || !!localErrors(params()).length;
-  if (state.interactiveLoaded) {
-    $("sendH3").disabled = !!busy || !!localErrors(params()).length;
+async function toggleInteractive() {
+  const button = $("interToggle");
+  button.disabled = true;
+  try {
+    if (state.interactive?.loaded) {
+      state.interactive = await api("/api/interactive/unload", {});
+    } else {
+      saveSettings.flush();
+      state.interactive = await api("/api/interactive/load", params());
+    }
+  } catch (err) {
+    toast(err.message, { kind: "error" });
+  } finally {
+    button.disabled = false;
+    renderInteractive();
   }
-  $("cancel").disabled = !!(busy && j.state === "cancelling");
-  $("cancel").textContent = j?.state === "cancelling" ? "Stopping…" : "Stop";
+}
 
-  if (!j) return;
-  // Clear preview when job finishes (success, failure, or cancel)
-  if (!busy) {
-    clearPreview();
-    $("previewImg").classList.remove("on");
-    $("previewImg").hidden = true;
-    $("player").classList.add("on");
-  }
-  $("phaseName").textContent = j.phase || "starting";
-  if (j.progress) {
-    const [n, t] = j.progress;
-    $("phaseBar").style.width = (100 * n / t) + "%";
-    $("phasePct").textContent = `${n}/${t}`;
-  }
-  if (busy && !state.tick) {
-    state.tick = setInterval(() => {
-      if (!state.job?.started) return;
-      const s = Math.floor(Date.now() / 1000 - state.job.started);
-      $("elapsed").textContent = `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s elapsed`;
-    }, 1000);
-  }
-  if (!busy && state.tick) { clearInterval(state.tick); state.tick = null; }
+/* ── queue and progress ─────────────────────────────────────────── */
 
-  const tbody = $("profile").querySelector("tbody");
-  tbody.innerHTML = "";
-  (j.profile || []).forEach((r) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${r.component}</td><td>${r.stage}</td><td>${r.wall.toFixed(2)}s</td>`;
-    tbody.append(tr);
+let elapsedTimer = null;
+
+function isActive(job) { return job.state === "running" || job.state === "cancelling"; }
+
+function renderQueue(items) {
+  state.queue = items;
+  const running = items.find(isActive);
+  const pending = items.filter((job) => job.state === "queued");
+  if (running && state.runningId !== running.id) {
+    state.runningId = running.id;
+    state.followPreview = true;
+    state.livePreview = null;
+  }
+  if (!running) state.runningId = null;
+  $("lamp").classList.toggle("busy", !!running);
+  $("lampText").textContent = running ? (pending.length ? `rendering · ${pending.length} queued` : "rendering") : pending.length ? `${pending.length} queued` : "idle";
+  $("running").hidden = !running;
+  clearInterval(elapsedTimer);
+  if (running) {
+    renderRunning(running);
+    elapsedTimer = setInterval(renderRunningFromQueue, 1000);
+  } else {
+    document.title = "h3 studio";
+  }
+  $("queueWrap").hidden = !pending.length;
+  $("queue").replaceChildren(...pending.map((job) => el("li", {},
+    el("span", { text: `${job.label || "take"} · seed ${job.seed} · ${job.run_mode === "interactive" ? "interactive" : "one-shot"} · queued` }),
+    el("button", { class: "ghost sm", type: "button", text: "Remove",
+      onclick: () => api("/api/cancel", { id: job.id }).catch((err) => toast(err.message, { kind: "error" })) }))));
+}
+
+function renderRunningFromQueue() {
+  const running = state.queue.find(isActive);
+  if (running) renderRunning(running);
+}
+
+/** Rough overall progress for the tab title: stage bands, denoise weighted most. */
+function overallPercent(job) {
+  const bands = { load: [0, 8], encode: [8, 15], denoise: [15, 85], decode: [85, 95], mp4: [95, 100] };
+  const [lo, hi] = bands[job.stage] || [0, 0];
+  const [n, total] = job.progress || [0, 0];
+  return Math.round(lo + (total ? (hi - lo) * Math.min(1, n / total) : 0));
+}
+
+function renderRunning(job) {
+  const stageIndex = STAGES.findIndex(([key]) => key === job.stage);
+  const [n, total] = job.progress || [0, 0];
+  $("stepper").replaceChildren(...STAGES.map(([key, label], i) => el("li", {
+    class: i < stageIndex ? "done" : i === stageIndex ? "active" : "",
+  }, key === "denoise" && i === stageIndex && total ? `${label} ${n}/${total}` : label)));
+  const cancelling = job.state === "cancelling";
+  $("phaseName").textContent = `${job.label || "take"} — ${cancelling ? "stopping…" : job.phase || "starting"}`;
+  $("phasePct").textContent = total ? `${n}/${total}` : "";
+  $("phaseBar").style.width = total ? `${Math.min(100, (100 * n) / total)}%` : "0%";
+  $("phaseBar").parentElement.classList.toggle("indeterminate", !total);
+  const elapsed = job.started ? Date.now() / 1000 - job.started : 0;
+  $("elapsed").textContent = job.started ? `${fmtSecs(elapsed)} elapsed` : "";
+  let eta = "";
+  if (job.stage === "denoise" && job.eta_s) eta = `≈ ${fmtSecs(job.eta_s)} left in denoise`;
+  else if (job.estimate_s && job.estimate_s > elapsed) eta = `≈ ${fmtSecs(job.estimate_s - elapsed)} left (estimate)`;
+  $("eta").textContent = eta;
+  $("cancel").disabled = cancelling;
+  $("cancel").textContent = cancelling ? "Stopping…" : "Stop";
+  $("cancel").onclick = () => api("/api/cancel", { id: job.id }).catch((err) => toast(err.message, { kind: "error" }));
+  const live = state.livePreview && state.livePreview.id === job.id ? state.livePreview : job.preview_latest;
+  $("followPreviewBtn").hidden = !live || state.followPreview;
+  $("followPreviewBtn").onclick = () => {
+    state.followPreview = true;
+    state.selected = null;
+    renderTakes();
+    queuePreviewFrame({ ...live, id: job.id });
+    $("followPreviewBtn").hidden = true;
+  };
+  document.title = `(${overallPercent(job)}%) h3 studio`;
+}
+
+function onJobEvent(job) {
+  const index = state.queue.findIndex((item) => item.id === job.id);
+  if (isActive(job) || job.state === "queued") {
+    if (index >= 0) state.queue[index] = { ...state.queue[index], ...job };
+    renderQueue(state.queue);
+  }
+  noteBatchJob(job);
+  if (job.profile?.length) renderProfileTable(job.profile);
+  if (job.state === "failed") {
+    toast(`${job.label || "take"} failed: ${job.error || "unknown error"}`, { kind: "error", hint: job.hint || "" });
+    notify(`Render failed: ${job.label || "take"}`, job.error || "");
+  } else if (job.state === "done") {
+    notify(`Render finished: ${job.label || "take"}`, job.output || "");
+  }
+  if (["done", "failed", "cancelled"].includes(job.state) && job.session === state.session) {
+    resetPreviewQueue();
+    if (job.state !== "done" && state.followPreview && !state.selected) showVideo(null);
+  }
+}
+
+function notify(title, body) {
+  const enabled = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false);
+  if (!enabled || !("Notification" in window) || Notification.permission !== "granted" || !document.hidden) return;
+  try { new Notification(title, { body }); } catch (e) { /* notifications unavailable */ }
+}
+
+function renderNotifyButton() {
+  const on = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false) && "Notification" in window && Notification.permission === "granted";
+  $("notifyButton").classList.toggle("on", on);
+  $("notifyButton").setAttribute("aria-pressed", String(on));
+  $("notifyButton").title = on ? "Notifications on — click to turn off" : "Notify me when a render finishes";
+}
+
+async function toggleNotify() {
+  if (!("Notification" in window)) { toast("This browser doesn't support notifications."); return; }
+  const on = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false);
+  if (on) {
+    safeStorage(() => localStorage.setItem(NOTIFY_KEY, "0"));
+  } else {
+    const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if (permission !== "granted") { toast("Notifications are blocked for this page in the browser settings."); return; }
+    safeStorage(() => localStorage.setItem(NOTIFY_KEY, "1"));
+  }
+  renderNotifyButton();
+}
+
+/* ── terminal ───────────────────────────────────────────────────── */
+
+let lastLogReplaceable = false;
+
+function appendLog(line, replace = false, kind = "") {
+  const out = $("terminalOutput");
+  if (replace && lastLogReplaceable && out.lastChild) {
+    out.lastChild.textContent = `${line}\n`;
+  } else {
+    out.append(el("span", { class: kind || (line.startsWith("!! ") ? "err" : line.startsWith("$ ") || line.startsWith("h3> ") ? "cmdline" : ""), text: `${line}\n` }));
+    while (out.childNodes.length > 4000) out.firstChild.remove();
+  }
+  lastLogReplaceable = true;
+  if ($("followLog").checked) out.scrollTop = out.scrollHeight;
+}
+
+function setTerminalLog(text) {
+  const out = $("terminalOutput");
+  out.replaceChildren();
+  lastLogReplaceable = false;
+  // Logs written by older versions still contain Kitty image payload lines.
+  (text || "").split("\n").filter((line) => line && !line.includes("\u001b_G")).forEach((line) => appendLog(line));
+  lastLogReplaceable = false;
+}
+
+function renderProfileTable(rows) {
+  $("profileTable").querySelector("tbody").replaceChildren(...rows.map((row) => el("tr", {},
+    el("td", { text: row.component }), el("td", { text: row.stage }), el("td", { text: `${row.wall.toFixed(2)}s` }))));
+}
+
+/**
+ * Wall time per component from --profile rows. A component's "total" row
+ * already includes its sub-stages, so it wins over summing; a "load" stage is
+ * split out so model loading and compute show separately.
+ */
+function profileByComponent(rows) {
+  const groups = {};
+  for (const row of rows) (groups[row.component] = groups[row.component] || []).push(row);
+  const sums = {};
+  for (const [component, items] of Object.entries(groups)) {
+    const total = items.find((row) => row.stage === "total");
+    const load = items.filter((row) => row.stage === "load").reduce((a, row) => a + row.wall, 0);
+    const wall = total ? total.wall : items.reduce((a, row) => a + row.wall, 0);
+    if (load > 0 && wall > load) {
+      sums[`${component} load`] = load;
+      sums[component] = wall - load;
+    } else {
+      sums[component] = wall;
+    }
+  }
+  return sums;
+}
+
+/** Stacked bars of profile wall time per component for recent takes. */
+function renderTimingChart() {
+  const takes = state.takes.filter((t) => t.meta?.profile?.length).slice(0, 8);
+  if (!takes.length) {
+    $("timingChart").replaceChildren(el("p", { class: "hint", text: "Timing appears here after a take renders with --profile." }));
+    return;
+  }
+  const totals = {};
+  const perTake = takes.map((take) => {
+    const sums = profileByComponent(take.meta.profile);
+    for (const [key, value] of Object.entries(sums)) totals[key] = (totals[key] || 0) + value;
+    return { take, sums, total: Object.values(sums).reduce((a, b) => a + b, 0) };
   });
-}
-
-function renderQueue(q) {
-  $("queueWrap").hidden = !q.length;
-  const ul = $("queue");
-  ul.innerHTML = "";
-  q.forEach((j) => {
-    const li = document.createElement("li");
-    li.textContent = `${j.label || "take"} · seed ${j.params.seed} · ${j.state}`;
-    li.append(mkBtn("Remove", async () => {
-      await fetch("/api/cancel", { method: "POST", body: JSON.stringify({ id: j.id }) });
-    }));
-    ul.append(li);
+  const top = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([key]) => key);
+  const keys = [...top, "other"];
+  const max = Math.max(...perTake.map((row) => row.total), 1);
+  const segment = (take, sums) => keys.map((key, i) => {
+    const value = key === "other" ? Object.entries(sums).filter(([k]) => !top.includes(k)).reduce((a, [, v]) => a + v, 0) : sums[key] || 0;
+    return value > 0 ? el("i", { class: `c${i}`, style: { width: `${(100 * value) / max}%` }, title: `${key}: ${value.toFixed(1)}s` }) : null;
   });
+  $("timingChart").replaceChildren(
+    el("div", { class: "legend" }, keys.map((key, i) => el("span", {}, el("i", { class: `c${i}` }), key))),
+    ...perTake.map(({ take, sums, total }) => el("div", { class: "timing-row", title: take.name },
+      el("span", { class: "nm", text: take.name }),
+      el("div", { class: "bars" }, segment(take, sums)),
+      el("span", { class: "total", text: `${total.toFixed(1)}s` }))));
 }
 
-function appendLog(line) {
-  const el = $("terminalOutput");
-  el.textContent += line + "\n";
-  if (el.textContent.length > 60000) el.textContent = el.textContent.slice(-40000);
-  el.scrollTop = el.scrollHeight;
+function bindTerminal() {
+  $("consoleTabs").addEventListener("click", (e) => {
+    const tab = e.target.closest("button[data-tab]")?.dataset.tab;
+    if (!tab) return;
+    [...$("consoleTabs").children].forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+    $("terminalOutput").hidden = tab !== "log";
+    $("profile").hidden = tab !== "profile";
+    if (tab === "profile") renderTimingChart();
+  });
+  $("clearLog").onclick = () => { $("terminalOutput").replaceChildren(); lastLogReplaceable = false; };
+  $("terminalForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const command = $("terminalCommand").value.trim();
+    if (!command) return;
+    $("terminalCommand").value = "";
+    try { await api("/api/shell", { session: state.session, command }); } catch (err) { appendLog(`!! ${err.message}`); }
+  };
+  $("interactiveForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const line = $("interactiveInput").value.trim();
+    if (!line) return;
+    $("interactiveInput").value = "";
+    try { await api("/api/interactive/input", { line }); } catch (err) { appendLog(`!! ${err.message}`); }
+  };
+
+  const consoleBox = $("consoleContainer");
+  let startY = 0, startHeight = 0, dragging = false;
+  const move = (clientY) => { consoleBox.style.height = `${Math.max(150, Math.min(startHeight + (startY - clientY), 640))}px`; };
+  $("resizeHandle").addEventListener("pointerdown", (e) => {
+    dragging = true; startY = e.clientY; startHeight = consoleBox.offsetHeight;
+    $("resizeHandle").setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+  });
+  $("resizeHandle").addEventListener("pointermove", (e) => { if (dragging) move(e.clientY); });
+  $("resizeHandle").addEventListener("pointerup", () => { dragging = false; document.body.classList.remove("resizing"); });
 }
 
-const PREVIEW_MIN_INTERVAL_MS = 300;
+/* ── events ─────────────────────────────────────────────────────── */
 
-// Frames from a multi-frame preview chunk arrive back-to-back over SSE (one
-// VAE decode, N frames, no delay between them). Queue them so each stays on
-// screen at least PREVIEW_MIN_INTERVAL_MS before the next takes over, instead
-// of flickering through them almost instantly. Any frames still queued from
-// an older denoising step are dropped as soon as a newer step's frame shows
-// up, so the preview never drifts far behind actual generation progress.
-function queuePreviewFrame(payload) {
-  if (payload.step !== state.previewQueueStep) {
-    state.previewQueue = [];
-    state.previewQueueStep = payload.step;
-  }
-  state.previewQueue.push(payload);
-  if (!state.previewTimer) {
-    state.previewTimer = setInterval(drainPreviewQueue, 100);
-    drainPreviewQueue();
-  }
-}
-
-function drainPreviewQueue() {
-  if (state.previewQueue.length === 0) return;
-  const now = Date.now();
-  if (now - state.previewLastShownAt < PREVIEW_MIN_INTERVAL_MS) return;
-  const next = state.previewQueue.shift();
-  state.previewLastShownAt = now;
-  updatePreviewFrame(next);
-}
-
-function resetPreviewQueue() {
-  state.previewQueue = [];
-  state.previewQueueStep = null;
-  state.previewLastShownAt = 0;
-  if (state.previewTimer) {
-    clearInterval(state.previewTimer);
-    state.previewTimer = null;
-  }
-}
-
-function updatePreviewFrame(payload) {
-  const { url, step, total, width, height, frameIndex, frameTotal } = payload;
-  if (!url) return;
-  state.preview = { url, step, total, width, height, frameIndex, frameTotal };
-  const previewImg = $("previewImg");
-  const viewerEmpty = $("viewerEmpty");
-  // A preview event only ever arrives while a render is actively producing
-  // frames, so it should always take over the viewer immediately — gating
-  // this on state.job/state.selected raced against "job"/"queue" SSE events
-  // and could leave a stale previously-selected video showing instead.
-  previewImg.src = url;
-  previewImg.hidden = false;
-  previewImg.classList.add("on");
-  $("player").classList.remove("on");
-  viewerEmpty.hidden = true;
-  const badge = $("previewBadge");
-  if (badge) {
-    const dims = width && height ? ` · ${width}×${height}` : "";
-    const frame = frameTotal > 1 ? `, frame ${frameIndex + 1}/${frameTotal}` : "";
-    badge.textContent = `Preview ${step}/${total}${frame}${dims}`;
-    badge.title = "h3 previews its internal working frame during denoising — "
-      + "this may differ in aspect ratio from your requested output size, "
-      + "which is only applied at final encode.";
-    badge.hidden = false;
-  }
-}
-
-function clearPreview() {
-  resetPreviewQueue();
-  state.preview = { url: null, step: 0, total: 0 };
-  const badge = $("previewBadge");
-  if (badge) badge.hidden = true;
-}
-
-/* ── events ────────────────────────────────────────────────────── */
+let eventSource = null;
 
 function connect() {
-  const es = new EventSource("/api/events");
-  es.onmessage = (e) => {
-    const { kind, payload } = JSON.parse(e.data);
-    if (kind === "hello") {
-      state.inputs = payload.inputs; state.outputs = payload.outputs;
-      state.timelineList = payload.timeline || [];
-      renderLibrary(); renderTakes(); renderTimelineList(); renderQueue(payload.queue);
-      $("terminalOutput").textContent = "";
-      if (payload.terminal_log) $("terminalOutput").textContent = payload.terminal_log;
-      else [...(payload.history || []).reverse(), ...(payload.queue || [])].forEach((job) => {
-        (job.log || []).forEach((line) => appendLog(line));
-      });
-      $("terminalOutput").scrollTop = $("terminalOutput").scrollHeight;
-      const run = payload.queue.find((j) => j.state === "running" || j.state === "cancelling");
-      if (run) showJob(run);
-    } else if (kind === "job") {
-      showJob(payload);
-      if (payload.state === "failed" && payload.error) appendLog("!! " + payload.error);
-    } else if (kind === "line") {
-      appendLog(payload.line);
-    } else if (kind === "terminal") {
-      if (payload.line) appendLog(payload.line);
-      if (payload.error) appendLog("!! " + payload.error);
-      $("terminalCommand").disabled = !!payload.running;
-      $("terminalForm").querySelector("button").disabled = !!payload.running;
-    } else if (kind === "queue") {
-      renderQueue(payload);
-      if (!payload.some((j) => j.state === "running")) showJob(null);
-    } else if (kind === "outputs") {
-      state.outputs = payload; renderTakes();
-      if (payload[0] && !state.selected) select(payload[0].name);
-    } else if (kind === "inputs") {
-      state.inputs = payload; renderLibrary();
-    } else if (kind === "timeline") {
-      state.timelineList = payload; renderTimelineList();
-    } else if (kind === "preview") {
-      queuePreviewFrame(payload);
-    } else if (kind === "reload") {
-      console.log('[Hot Reload] Reloading...');
-      location.reload();
+  eventSource?.close();
+  const session = state.session;
+  const es = new EventSource(`/api/events?session=${encodeURIComponent(session)}`);
+  eventSource = es;
+  es.onmessage = (event) => {
+    const { kind, payload } = JSON.parse(event.data);
+    const mine = !payload?.session || payload.session === state.session;
+    switch (kind) {
+      case "hello":
+        setTerminalLog(payload.terminal_log);
+        state.interactive = payload.interactive || { loaded: false };
+        renderInteractive();
+        renderQueue(payload.queue || []);
+        break;
+      case "queue":
+        renderQueue(payload);
+        break;
+      case "job":
+        onJobEvent(payload);
+        break;
+      case "progress": {
+        const job = state.queue.find((item) => item.id === payload.id);
+        if (job) { Object.assign(job, payload); renderRunning(job); }
+        break;
+      }
+      case "log":
+        if (mine) appendLog(payload.line, payload.replace);
+        break;
+      case "shell":
+        if (mine) appendLog(payload.line);
+        $("terminalCommand").disabled = !!payload.running;
+        break;
+      case "preview":
+        if (mine) {
+          const job = state.queue.find((item) => item.id === payload.id);
+          if (job) { job.preview_latest = payload; job.preview_count = payload.count; }
+          queuePreviewFrame(payload);
+          renderRunningFromQueue();
+        }
+        break;
+      case "takes":
+        if (mine) loadTakes(state.followPreview || !state.selected ? payload.name : null).catch(() => {});
+        break;
+      case "inputs":
+        if (mine) loadInputs().catch(() => {});
+        break;
+      case "timeline":
+        if (mine) loadTimeline().catch(() => {});
+        break;
+      case "interactive":
+        state.interactive = payload;
+        renderInteractive();
+        break;
+      default:
     }
   };
-  es.onerror = () => setTimeout(() => { es.close(); connect(); }, 3000);
+  es.onerror = () => {
+    $("lampText").textContent = "reconnecting…";
+    if (es.readyState === EventSource.CLOSED) setTimeout(() => { if (eventSource === es) connect(); }, 3000);
+  };
 }
 
-/* ── mode ──────────────────────────────────────────────────────── */
+/* ── sessions ───────────────────────────────────────────────────── */
 
-function setMode(m) {
-  state.mode = m;
-  [...$("modeSwitch").children].forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
-  $("refMode").hidden = m !== "ref";
-  $("anchorMode").hidden = m === "ref";
-  if (m !== "ref") closeMentionMenu();
+function renderSessionSelect() {
+  $("sessionSelect").replaceChildren(...state.sessions.map((name) => el("option", { value: name, text: name, selected: name === state.session })));
 }
 
-/* ── wiring ────────────────────────────────────────────────────── */
+async function activateSession(name) {
+  saveSettings.flush();
+  const data = await api("/api/session/activate", { session: name });
+  state.session = data.name;
+  state.sessions = data.sessions;
+  renderSessionSelect();
+  state.selected = null;
+  state.selectedTimeline = null;
+  state.compare = [];
+  state.serverErrors = [];
+  showVideo(null);
+  await Promise.all([loadInputs(), loadTakes(), loadTimeline()]);
+  restore({ ...data.settings });
+  connect();
+}
 
-function init() {
-  buildChips();
-  setMode("ref");
-  renderAnchors();
+function openSessionModal(kind) {
+  $("sessionModal").dataset.kind = kind;
+  $("sessionModalTitle").textContent = kind === "duplicate" ? `Duplicate ${state.session}` : "New session";
+  $("confirmSession").textContent = kind === "duplicate" ? "Duplicate" : "Create";
+  $("sessionNameInput").value = kind === "duplicate" ? `${state.session}-copy` : "";
+  $("sessionError").hidden = true;
+  $("sessionModal").hidden = false;
+  $("sessionNameInput").focus();
+  $("sessionNameInput").select();
+}
 
-  ["width", "height", "steps", "layers", "reuse", "seed", "frames",
-   "label", "internal", "tokenReduction", "int8RowFc2", "ssdStreaming",
-   "zeroCopy", "prefetchDepth", "prefetchWorkers", "runMode", "previewToggle",
-   "previewModeSingle", "previewModeAll"]
-    .forEach((id) => $(id).addEventListener("input", (event) => {
-      if (id === "width" || id === "height") {
-        $("sizePresets").dataset.native = "";
-        $("sizePresets").dataset.preset = "";
-      }
-      if (id === "previewToggle") syncPreviewModeEnabled();
-      sync();
-    }));
-  syncPreviewModeEnabled();
-  $("prompt").addEventListener("input", () => {
-    readPromptEditor();
-    const selection = getSelection();
-    const node = selection?.anchorNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE || !$("prompt").contains(node)) {
-       closeMentionMenu(); sync(); return;
+async function confirmSessionModal() {
+  const name = $("sessionNameInput").value.trim();
+  if (!name) { $("sessionError").textContent = "Enter a session name."; $("sessionError").hidden = false; return; }
+  try {
+    saveSettings.flush();
+    if ($("sessionModal").dataset.kind === "duplicate") {
+      const data = await api("/api/session/duplicate", { session: state.session, as: name });
+      await activateSession(data.name);
+    } else {
+      if (state.sessions.includes(name)) throw new Error("A session with that name already exists — pick it from the list.");
+      await activateSession(name);
     }
-    const before = node.nodeValue.slice(0, selection.anchorOffset);
-    const match = before.match(/(^|\s)@([^\s@]*)$/);
-    if (!match) { closeMentionMenu(); sync(); return; }
-    const query = match[2];
-    const options = promptCandidates(query);
-    state.mention = {
-       node,
-       start: before.length - match[0].length + match[1].length,
-       end: before.length,
-       options,
-       selected: 0,
-    };
-    const rect = selection.getRangeAt(0).getBoundingClientRect();
-    const menu = $("mentionMenu");
-    menu.style.left = `${rect.left}px`; menu.style.top = `${rect.bottom + 4}px`;
-    menu.innerHTML = "";
-    let lastGroup = null;
-    const inPromptOnly = state.mode !== "ref";
-    options.forEach((ref, i) => {
-       const group = !inPromptOnly && ref.attached ? "Attached" : "Input library";
-       if (group !== lastGroup) {
-         const heading = document.createElement("div");
-         heading.className = "mention-group";
-         heading.textContent = group;
-         menu.append(heading);
-         lastGroup = group;
-       }
-       const button = document.createElement("button");
-       button.type = "button"; button.className = `mention-option${i ? "" : " on"}`;
-       const preview = document.createElement("span");
-       preview.className = `mention-preview ${ref.kind}`;
-       if (ref.kind === "image") {
-         const image = document.createElement("img");
-         image.src = `/media/input/${encodeURIComponent(ref.name)}`;
-         image.alt = "";
-         preview.append(image);
-       } else {
-         preview.textContent = ref.kind === "video" ? "▶" : "♪";
-       }
-       const details = document.createElement("span");
-       const hint = inPromptOnly ? "mention in prompt" : ref.attached ? "attached" : "attach from library";
-       details.innerHTML = `${ref.name}<small>${hint}</small>`;
-       button.append(preview, details);
-       button.dataset.optionIndex = i;
-       button.onmousedown = (event) => { event.preventDefault(); insertMention(ref); };
-       menu.append(button);
-    });
-    menu.hidden = !options.length;
-    sync();
-  });
-  $("prompt").addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
-      event.preventDefault();
-      document.execCommand(event.shiftKey ? "redo" : "undo");
-      readPromptEditor();
-      sync();
-      return;
-    }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
-      closeMentionMenu();
-      return;
-    }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
-      event.preventDefault();
-      closeMentionMenu();
-      const savedRange = getSelection()?.rangeCount ? getSelection().getRangeAt(0).cloneRange() : null;
-      navigator.clipboard?.readText().then((text) => insertPromptText(text, savedRange)).catch(() => {});
-      return;
-    }
-    if (event.key === "Backspace") {
-      const selection = getSelection();
-      if (selection?.isCollapsed && selection.anchorNode?.nodeType === Node.TEXT_NODE &&
-          selection.anchorOffset === 0 &&
-          (selection.anchorNode.previousSibling?.dataset?.refId || selection.anchorNode.previousSibling?.dataset?.libName)) {
-        event.preventDefault();
-        selection.anchorNode.previousSibling.remove();
-        readPromptEditor(); renderPromptEditor(); sync();
-        return;
-      }
-    }
-    if (!state.mention || $("mentionMenu").hidden) return;
-    const options = state.mention.options;
-    if (event.key === "Escape") { event.preventDefault(); closeMentionMenu(); return; }
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-       event.preventDefault();
-       state.mention.selected = (state.mention.selected + (event.key === "ArrowDown" ? 1 : options.length - 1)) % options.length;
-       [...$("mentionMenu").querySelectorAll(".mention-option")].forEach((el) =>
-         el.classList.toggle("on", +el.dataset.optionIndex === state.mention.selected));
-    } else if (event.key === "Enter" || event.key === "Tab") {
-       event.preventDefault(); insertMention(options[state.mention.selected]);
-    }
-  });
-
-  $("modeSwitch").onclick = (e) => {
-    if (e.target.dataset.mode) { setMode(e.target.dataset.mode); sync(); }
-  };
-  $("dice").onclick = () => { $("seed").value = Math.floor(Math.random() * 2 ** 31); sync(); };
-
-  async function switchSession(name) {
-    if (!name) return;
-    if (state.cfg?.session && name !== state.cfg.session &&
-        !confirm(`Switch to session "${name}"?\nThe web UI will reload with its saved settings and blank current selections.`)) {
-      $("sessionSelect").value = state.cfg.session;
-      return;
-    }
-    // Clear terminal output when switching sessions
-    $("terminalOutput").textContent = "";
-    const active = await fetch("/api/session/activate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    const activeData = await active.json();
-    if (activeData.error) {
-      appendLog("!! " + activeData.error);
-      $("sessionSelect").value = state.cfg.session;
-      return;
-    }
-    if (name !== state.cfg.session) {
-      window.location.reload();
-      return;
-    }
-    const res = await fetch(`/api/session/${encodeURIComponent(name)}`);
-    if (!res.ok) {
-      state.inputs = [];
-      state.outputs = [];
-      state.timelineList = [];
-      renderLibrary();
-      renderTakes();
-      renderTimelineList();
-      // Clear terminal output when session doesn't exist (new session)
-      $("terminalOutput").textContent = "";
-      return;
-    }
-    const p = await res.json();
-    state.promptDoc = Array.isArray(p.prompt_doc) ? p.prompt_doc : [{ type: "text", value: p.prompt || "" }];
-    $("label").value = p.label || "";
-    $("width").value = p.width || 512;
-    $("height").value = p.height || 512;
-    const megapixels = ((p.width || 512) * (p.height || 512)) / 1e6;
-    const mpInput = $("megapixels");
-    mpInput.value = Math.min(+mpInput.max, Math.max(+mpInput.min, megapixels)).toFixed(2);
-    $("steps").value = p.steps || 4;
-    $("layers").value = p.layers || 50;
-    $("reuse").value = p.reuse || 1;
-    $("seed").value = p.seed || 42;
-    $("frames").value = LEGAL.indexOf(p.frames);
-    $("internal").value = p.render_width ? String(p.render_width / p.width) : "1";
-    $("tokenReduction").checked = !!p.token_reduction;
-    $("previewToggle").checked = p.preview !== false;
-    setPreviewMode(p.previewAllFrames ? "all" : "single");
-    syncPreviewModeEnabled();
-    $("int8RowFc2").checked = !!p.int8_row_fc2;
-    $("ssdStreaming").checked = !!p.ssd_streaming;
-    $("runMode").value = p.run_mode || "oneshot";
-    setMode(p.mode || "ref");
-    $("prefetchDepth").value = p.env?.H3_QWEN_PREFETCH_DEPTH || "";
-    $("prefetchWorkers").value = p.env?.H3_QWEN_PREFETCH || "";
-    state.refs = (p.refs || [
-      ...(p.ref_images || []).map((name) => ({ name, kind: "image" })),
-      ...(p.ref_videos || []).map((clip) => ({ name: clip.name, kind: "video", mode: clip.silent ? "silent" : "keep" })),
-      ...(p.ref_audio || []).map((name) => ({ name, kind: "audio" })),
-    ]).map((ref, i) => ({
-      id: ref.id || `${Date.now()}-${i}`, mode: ref.kind === "video" ? (ref.mode || "keep") : undefined,
-      pairedAudio: ref.pairedAudio || null, duration: ref.duration ?? null, ...ref,
-    }));
-    state.first = p.first_frame || null;
-    state.last = p.last_frame || null;
-    renderRefs();
-    renderPromptEditor();
-    renderAnchors();
-    fetch("/api/inputs").then((r) => r.json()).then((items) => {
-      state.inputs = items;
-      renderLibrary();
-    });
-    fetch("/api/outputs").then((r) => r.json()).then((items) => {
-      state.outputs = items;
-      renderTakes();
-    });
-    fetch("/api/timeline").then((r) => r.json()).then((items) => {
-      state.timelineList = items;
-      renderTimelineList();
-    });
-    sync();
-  }
-
-  $("sessionSelect").onchange = (e) => {
-    if (e.target.value) switchSession(e.target.value);
-  };
-  const closeSessionModal = () => {
     $("sessionModal").hidden = true;
-    $("sessionError").hidden = true;
-  };
-  $("newSession").onclick = () => {
-    $("newSessionName").value = "";
-    $("sessionModal").hidden = false;
-    $("newSessionName").focus();
-  };
-  $("cancelSession").onclick = closeSessionModal;
-  $("createSession").onclick = async () => {
-    const name = $("newSessionName").value.trim();
-    if (!name) {
-      $("sessionError").textContent = "Enter a session name.";
-      $("sessionError").hidden = false;
-      $("newSessionName").focus();
-      return;
-    }
-    const active = await fetch("/api/session/activate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim() }),
-    });
-    const data = await active.json();
-    if (data.error) {
-      $("sessionError").textContent = data.error;
-      $("sessionError").hidden = false;
-      return;
-    }
-    // Clear terminal output when creating a new session
-    $("terminalOutput").textContent = "";
-    window.location.reload();
-  };
-  $("newSessionName").onkeydown = (e) => {
-    if (e.key === "Enter") $("createSession").click();
-    if (e.key === "Escape") closeSessionModal();
-  };
-  $("deleteSession").onclick = async () => {
-    const current = state.cfg?.session;
-    if (!current) return;
-    if (!confirm(`Delete session "${current}"?\nThis permanently removes its inputs, outputs, and settings.`)) return;
-    const res = await fetch("/api/session/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: current }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      appendLog("!! " + data.error);
-      return;
-    }
-    // Clear terminal output when deleting the current session
-    $("terminalOutput").textContent = "";
-    window.location.reload();
-  };
-  $("duplicateSession").onclick = async () => {
-    const current = state.cfg?.session;
-    if (!current) return;
-    const name = prompt("Name for the duplicated session:", `${current}-copy`);
-    if (name === null) return;
-    const trimmed = name.trim();
-    if (!trimmed) { appendLog("!! Enter a session name."); return; }
-    const res = await fetch("/api/session/duplicate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: current, as: trimmed }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      appendLog("!! " + data.error);
-      return;
-    }
-    window.location.reload();
-  };
+  } catch (err) {
+    $("sessionError").textContent = err.message;
+    $("sessionError").hidden = false;
+  }
+}
 
-  $("scaffold").onclick = () => {
-    const tokens = {};
-    state.refs.forEach((ref, i) => {
-      const n = state.refs.slice(0, i + 1).filter((item) => item.kind === ref.kind).length;
-      tokens[ref.kind] = tokens[ref.kind] || [];
-      tokens[ref.kind].push(`<${ref.kind === "image" ? "Picture" : ref.kind[0].toUpperCase() + ref.kind.slice(1)} ${n}>`);
-    });
-    const subject = Object.values(tokens).flat()[0] || "<subject>";
-    const audio = tokens.audio?.[0] || "the ambience";
-    state.promptDoc = [{ type: "text", value:
-      `Scene: ${subject} stands in ...\nAction: ...\nCamera: ...\nLook: ...\nAudio: match the ambience of ${audio}` }];
-    renderPromptEditor(); $("prompt").focus(); sync();
-  };
+async function deleteSession() {
+  if (!confirm(`Delete session "${state.session}"?\nThis permanently removes its inputs, takes, timeline and settings.`)) return;
+  try {
+    saveSettings.flush();
+    const data = await api("/api/session/delete", { session: state.session });
+    state.session = null;
+    await activateSession(data.name);
+  } catch (err) {
+    toast(err.message, { kind: "error" });
+  }
+}
+
+/* ── model dialog ───────────────────────────────────────────────── */
+
+function renderModelDot(info) {
+  const dot = $("modelDot");
+  const bad = !info.exists || !info.has_fl2va || !info.h3_runs;
+  const warn = !info.has_ref2va || info.broken_links.length || !info.ffmpeg || !info.ffprobe;
+  dot.className = `dot ${bad ? "bad" : warn ? "warn" : "ok"}`;
+  $("modelButton").title = bad ? "Setup problem — open to check" : warn ? "Setup warning — open to check" : "Model and tools look good";
+}
+
+function renderModelChecks(info) {
+  const row = (status, label, detail) => el("li", { class: status },
+    el("b", { text: status === "ok" ? "✓" : status === "warn" ? "!" : status === "bad" ? "✗" : "·" }),
+    el("span", { text: label }), detail ? el("code", { text: detail }) : null);
+  $("modelChecks").replaceChildren(
+    row(info.exists ? "ok" : "bad", "Model directory", info.path),
+    row(info.has_fl2va ? "ok" : "bad", "FL2VA pipeline — required for every render", info.has_fl2va ? "" : "FL2VA/transformer/config.json missing"),
+    row(info.has_ref2va ? "ok" : "warn", "Ref2VA pipeline — needed for references", info.has_ref2va ? "" : "Ref2VA/transformer/model.safetensors.index.json missing"),
+    row(info.broken_links.length ? "bad" : "ok", info.broken_links.length ? `${info.broken_links.length} broken symlink(s)` : "Symlinks resolve", info.broken_links.slice(0, 4).join(", ")),
+    row("info", `Size on disk: ${fmtBytes(info.size_bytes)}`, ""),
+    row(info.h3_runs ? "ok" : "bad", "h3 binary runs", info.h3_error ? `${info.h3} — ${info.h3_error}` : info.h3),
+    row(info.ffmpeg ? "ok" : "bad", "ffmpeg", info.ffmpeg || "not found — brew install ffmpeg"),
+    row(info.ffprobe ? "ok" : "bad", "ffprobe", info.ffprobe || "not found — brew install ffmpeg"));
+  renderModelDot(info);
+}
+
+async function openModelModal(refresh = false) {
+  $("modelError").hidden = true;
+  $("modelModal").hidden = false;
+  $("modelPathInput").value = state.cfg.model;
+  $("h3PathInput").value = state.cfg.h3;
+  $("h3PathField").hidden = !state.cfg.allow_shell;
+  $("h3PathHint").hidden = !!state.cfg.allow_shell;
+  $("modelChecks").replaceChildren(el("li", { class: "info", text: "Checking…" }));
+  try {
+    const info = await api(`/api/model${refresh ? "?refresh=1" : ""}`);
+    state.cfg.model_info = info;
+    renderModelChecks(info);
+  } catch (err) {
+    $("modelError").textContent = err.message;
+    $("modelError").hidden = false;
+  }
+}
+
+async function saveModelPaths() {
+  $("modelError").hidden = true;
+  try {
+    let info = null;
+    const model = $("modelPathInput").value.trim();
+    if (model && model !== state.cfg.model) {
+      info = await api("/api/model", { model });
+      state.cfg.model = info.path;
+    }
+    const h3 = $("h3PathInput").value.trim();
+    if (state.cfg.allow_shell && h3 && h3 !== state.cfg.h3) {
+      info = await api("/api/h3", { h3 });
+      state.cfg.h3 = info.h3;
+    }
+    if (info) {
+      state.cfg.model_info = info;
+      renderModelChecks(info);
+      setMode(state.mode);
+      sync();
+      toast("Paths updated.", { kind: "ok" });
+    }
+  } catch (err) {
+    $("modelError").textContent = err.message;
+    $("modelError").hidden = false;
+  }
+}
+
+/* ── shortcuts ──────────────────────────────────────────────────── */
+
+function visibleTakeNames() {
+  return [...$("takes").children].map((li) => li.querySelector(".nm")?.textContent).filter(Boolean);
+}
+
+function onGlobalKeydown(e) {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key === "Enter") {
+    e.preventDefault();
+    submit(e.shiftKey ? 3 : 1);
+    return;
+  }
+  if (e.key === "Escape") {
+    let closed = false;
+    document.querySelectorAll(".modal").forEach((modal) => { if (!modal.hidden) { modal.hidden = true; closed = true; } });
+    $("timelineReviewVideo").pause();
+    if (!$("compare").hidden) { exitCompare(); closed = true; }
+    closePopmenus();
+    if (closed) e.preventDefault();
+    return;
+  }
+  if (mod || e.altKey || isTyping(e.target) || e.target.tagName === "BUTTON" || e.target.tagName === "A") return;
+  if ([...document.querySelectorAll(".modal")].some((modal) => !modal.hidden)) return;
+  const player = $("player");
+  const hasVideo = player.classList.contains("on") && player.currentSrc;
+  if (e.key === " " && hasVideo) {
+    e.preventDefault();
+    if (player.paused) player.play().catch(() => {}); else player.pause();
+  } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && hasVideo) {
+    e.preventDefault();
+    player.pause();
+    player.currentTime = Math.max(0, player.currentTime + (e.key === "ArrowRight" ? 1 : -1) / H3_FPS);
+  } else if (e.key === "j" || e.key === "k") {
+    const names = visibleTakeNames();
+    if (!names.length) return;
+    const index = names.indexOf(state.selected);
+    const next = index < 0 ? 0 : Math.min(names.length - 1, Math.max(0, index + (e.key === "j" ? 1 : -1)));
+    selectTake(names[next]);
+    $("takes").children[next]?.scrollIntoView({ block: "nearest" });
+  }
+}
+
+/* ── wiring ─────────────────────────────────────────────────────── */
+
+function bindForm() {
+  ["steps", "layers", "reuse", "seed", "frames", "label", "internal", "tokenReduction", "int8RowFc2", "ssdStreaming",
+    "zeroCopy", "prefetchDepth", "prefetchWorkers", "previewModeSingle", "previewModeAll", "extraArgs"]
+    .forEach((id) => $(id).addEventListener("input", sync));
+  $("previewToggle").addEventListener("input", () => { syncPreviewModeEnabled(); sync(); });
+  $("width").addEventListener("change", onDimensionsTyped);
+  $("height").addEventListener("change", onDimensionsTyped);
+  $("aspectSelect").addEventListener("change", onAspectChange);
+  $("megapixels").addEventListener("input", () => {
+    if (state.canvas.aspect === "custom") state.canvas.customRatio = state.canvas.customRatio || +$("width").value / +$("height").value;
+    fitCanvas();
+    sync();
+  });
+  $("dice").onclick = () => { $("seed").value = randomSeed(); sync(); };
+
+  $("prompt").addEventListener("input", onPromptInput);
+  $("prompt").addEventListener("keydown", onPromptKeydown);
+  $("prompt").addEventListener("paste", onPromptPaste);
+  $("scaffold").onclick = scaffoldPrompt;
   $("clearPrompt").onclick = () => {
-    if (!promptText(state.promptDoc).trim()) return;
-    if (!confirm("Clear the prompt?")) return;
+    if (!promptText().trim() || !confirm("Clear the prompt?")) return;
     state.promptDoc = [{ type: "text", value: "" }];
     renderPromptEditor(); $("prompt").focus(); sync();
   };
+  $("historyBtn").onclick = (e) => {
+    e.stopPropagation();
+    const menu = $("historyMenu");
+    const open = menu.hidden;
+    closePopmenus(menu);
+    if (open) renderHistoryMenu();
+    menu.hidden = !open;
+  };
 
-  $("prompt").addEventListener("paste", (e) => {
-    const text = e.clipboardData?.getData("text/plain");
-    if (text == null) {
-      e.preventDefault();
-      const savedRange = getSelection()?.rangeCount ? getSelection().getRangeAt(0).cloneRange() : null;
-      navigator.clipboard?.readText().then((value) => insertPromptText(value, savedRange)).catch(() => {});
-      return;
-    }
-    e.preventDefault();
-    insertPromptText(text);
+  $("modeSwitch").addEventListener("click", (e) => {
+    const mode = e.target.closest("button[data-mode]")?.dataset.mode;
+    if (mode) { setMode(mode); sync(); }
   });
+  $("runModeSwitch").addEventListener("click", (e) => {
+    const mode = e.target.closest("button[data-run]")?.dataset.run;
+    if (mode) { setRunMode(mode); sync(); }
+  });
+  $("interToggle").onclick = toggleInteractive;
+  $("anchorFirst").onclick = () => { state.first = null; renderAnchors(); renderLibrary(); sync(); };
+  $("anchorLast").onclick = () => { state.last = null; renderAnchors(); renderLibrary(); sync(); };
 
-  $("file").onchange = (e) => upload(e.target.files);
+  $("file").addEventListener("change", (e) => { uploadFiles([...e.target.files]); e.target.value = ""; });
   const drop = $("drop");
-  ["dragenter", "dragover"].forEach((ev) =>
-    drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
-  ["dragleave", "drop"].forEach((ev) =>
-    drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-  drop.addEventListener("drop", (e) => upload(e.dataTransfer.files));
+  ["dragenter", "dragover"].forEach((type) => drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((type) => drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => uploadFiles([...e.dataTransfer.files]));
 
-  $("anchorFirst").onclick = () => { state.first = null; renderAnchors(); sync(); };
-  $("anchorLast").onclick = () => { state.last = null; renderAnchors(); sync(); };
+  $("render").onclick = () => submit(1);
+  $("queueBtn").onclick = () => submit(3);
+}
 
-  $("render").onclick = () => submit(params());
-  $("sendH3").onclick = () => {
-    // Send to h3.c always targets the already-loaded interactive process,
-    // regardless of what the Mode dropdown is currently set to.
-    submit({ ...params(), run_mode: "interactive" });
-  };
-  $("queueBtn").onclick = () => {
-    const base = params();
-    for (let i = 0; i < 3; i++) {
-      submit({ ...base, seed: Math.floor(Math.random() * 2 ** 31),
-               label: (base.label || "take") + "-" + (i + 1) });
-    }
-  };
-  $("cancel").onclick = async () => {
-    const button = $("cancel");
-    button.disabled = true;
-    button.textContent = "Stopping…";
-    try {
-      const res = await fetch("/api/cancel", {
-        method: "POST",
-        body: JSON.stringify({ id: state.job?.id }),
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        button.disabled = false;
-        button.textContent = "Stop";
-        appendLog("!! Could not stop the active render.");
-      }
-    } catch (error) {
-      button.disabled = false;
-      button.textContent = "Stop";
-      appendLog("!! Stop failed: " + error.message);
-    }
-  };
-
-  document.querySelector(".tabs").onclick = (e) => {
-    if (!e.target.dataset.tab) return;
-    [...e.currentTarget.children].forEach((b) => b.classList.toggle("on", b === e.target));
-    $("terminalOutput").hidden = e.target.dataset.tab !== "log";
-    $("profile").hidden = e.target.dataset.tab !== "profile";
-  };
-
-  $("terminalForm").onsubmit = async (e) => {
-    e.preventDefault();
-    const input = $("terminalCommand");
-    const command = input.value.trim();
-    if (!command) return;
-    appendLog("$ " + command);
-    input.value = "";
-    const res = await fetch("/api/terminal", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command }),
-    });
-    const data = await res.json();
-    if (data.error) appendLog("!! " + data.error);
-  };
-
-  $("loadH3").onclick = async () => {
-    const res = await fetch("/api/interactive/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params()),
-    });
-    const data = await res.json();
-    if (data.error) appendLog("!! " + data.error);
-    else {
-      appendLog("$ h3 -d " + state.cfg.model);
-      state.interactiveLoaded = true;
-      $("sendH3").disabled = false;
-      $("runMode").value = "interactive";
-      sync();
-    }
-  };
-
-  $("interactiveForm").onsubmit = async (e) => {
-    e.preventDefault();
-    const input = $("interactiveInput");
-    const line = input.value.trim();
-    if (!line) return;
-    appendLog("h3> " + line);
-    input.value = "";
-    const res = await fetch("/api/interactive/input", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ line }),
-    });
-    const data = await res.json();
-    if (data.error) appendLog("!! " + data.error);
-  };
-
-  document.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !$("render").disabled) {
-      $("render").click();
-    }
+function bindChrome() {
+  $("themeSwitch").addEventListener("click", (e) => {
+    const mode = e.target.closest("button[data-theme]")?.dataset.theme;
+    if (!mode) return;
+    applyTheme(mode);
+    safeStorage(() => localStorage.setItem(THEME_KEY, mode));
   });
+  $("notifyButton").onclick = toggleNotify;
+  $("sessionSelect").onchange = (e) => activateSession(e.target.value).catch((err) => toast(err.message, { kind: "error" }));
+  $("sessionMenuBtn").onclick = (e) => {
+    e.stopPropagation();
+    const menu = $("sessionMenu");
+    const open = menu.hidden;
+    closePopmenus(menu);
+    menu.hidden = !open;
+    $("sessionMenuBtn").setAttribute("aria-expanded", String(open));
+  };
+  $("newSession").onclick = () => { closePopmenus(); openSessionModal("new"); };
+  $("duplicateSession").onclick = () => { closePopmenus(); openSessionModal("duplicate"); };
+  $("deleteSession").onclick = () => { closePopmenus(); deleteSession(); };
+  $("cancelSession").onclick = () => { $("sessionModal").hidden = true; };
+  $("confirmSession").onclick = confirmSessionModal;
+  $("sessionNameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") confirmSessionModal(); });
 
-  fetch("/api/config").then((r) => r.json()).then((c) => {
-    state.cfg = c;
-    $("sessionSelect").value = c.session || "session-1";
-    $("loadH3").hidden = false;
-    $("sendH3").hidden = false;
-    $("interactiveForm").hidden = false;
-    $("modelPath").textContent = c.model;
-    $("h3Path").textContent = c.h3;
-    switchSession(c.session || "session-1");
-  });
-  fetch("/api/sessions").then((r) => r.json()).then((sessions) => {
-    const select = $("sessionSelect");
-    select.innerHTML = '<option value="">Select session</option>';
-    sessions.forEach((s) => {
-      const option = document.createElement("option");
-      option.value = s.name;
-      option.textContent = s.name;
-      select.append(option);
-    });
-    select.value = state.cfg?.session || "";
-  });
-
-  $("modelButton").onclick = () => {
-    $("pathPanel").hidden = false;
-    $("modelPathInput").value = state.cfg.model;
-    $("h3PathInput").value = state.cfg.h3;
-  };
-  $("timelineButton").onclick = () => {
-    openTimelineModal();
-  };
-  $("changeH3").onclick = () => {
-    $("pathPanel").hidden = true;
-    $("h3Error").hidden = true;
-    $("h3PathInput").value = state.cfg.h3;
-    $("h3Modal").hidden = false;
-    $("h3PathInput").focus();
-  };
-  $("cancelH3").onclick = () => { $("h3Modal").hidden = true; };
-  $("saveH3Path").onclick = async () => {
-    const h3 = $("h3PathInput").value.trim();
-    const res = await fetch("/api/h3", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ h3 }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      $("h3Error").textContent = data.error;
-      $("h3Error").hidden = false;
-      return;
-    }
-    state.cfg.h3 = data.h3;
-    $("h3Path").textContent = data.h3;
-    $("h3Modal").hidden = true;
-  };
-  $("h3PathInput").onkeydown = (e) => {
-    if (e.key === "Enter") $("saveH3Path").click();
-    if (e.key === "Escape") $("cancelH3").click();
-  };
-  $("changeModel").onclick = () => {
-    $("pathPanel").hidden = true;
-    $("modelError").hidden = true;
-    $("modelPathInput").value = state.cfg.model;
-    $("modelModal").hidden = false;
-    $("modelPathInput").focus();
-  };
+  $("modelButton").onclick = () => openModelModal(false);
+  $("recheckModel").onclick = () => openModelModal(true);
   $("cancelModel").onclick = () => { $("modelModal").hidden = true; };
-  $("saveModel").onclick = async () => {
-    const model = $("modelPathInput").value.trim();
-    const res = await fetch("/api/model", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      $("modelError").textContent = data.error;
-      $("modelError").hidden = false;
-      return;
-    }
-    state.cfg.model = data.model;
-    $("modelPath").textContent = data.model;
-    $("modelModal").hidden = true;
-  };
-  $("modelPathInput").onkeydown = (e) => {
-    if (e.key === "Enter") $("saveModel").click();
-    if (e.key === "Escape") $("cancelModel").click();
+  $("saveModel").onclick = saveModelPaths;
+
+  document.querySelector(".sidetabs").addEventListener("click", (e) => {
+    const side = e.target.closest("button[data-side]")?.dataset.side;
+    if (!side) return;
+    [...document.querySelector(".sidetabs").children].forEach((b) => b.classList.toggle("on", b.dataset.side === side));
+    $("takesPanel").hidden = side !== "takes";
+    $("timelinePanel").hidden = side !== "timeline";
+  });
+  $("starFilter").addEventListener("change", renderTakes);
+  $("compareGrid").onclick = () => openCompareGrid();
+  $("compareWipe").onclick = () => openWipe();
+  $("compareClear").onclick = () => { state.compare = []; if (!$("compare").hidden) exitCompare(); renderTakes(); };
+  $("previewSlider").addEventListener("input", renderScrub);
+  $("previewClose").onclick = () => {
+    const take = state.scrub?.take;
+    hidePreview();
+    if (take) selectTake(take.name, false); else showVideo(null);
   };
 
-  // Timeline modal functionality — combine multiple clips into one video.
-  function openTimelineModal() {
-    state.timelineSeq = [];
-    renderSequence();
-    $("timelineOutputName").value = "";
-    $("timelineRenderStatus").textContent = "";
-    if (state.timelineList[0]) showReview(state.timelineList[0].name);
-    else clearReview();
-    $("timelineModal").hidden = false;
-    browseTo("");
-  }
-
-  function showReview(name) {
-    const v = $("timelineReviewVideo");
-    v.src = `/media/timeline/${encodeURIComponent(name)}`;
-    v.muted = false;
-    v.load();
-    v.classList.add("on");
-    $("timelineReviewEmpty").hidden = true;
-  }
-
-  function clearReview() {
-    const v = $("timelineReviewVideo");
-    v.pause();
-    v.removeAttribute("src");
-    v.load();
-    v.classList.remove("on");
-    $("timelineReviewEmpty").hidden = false;
-  }
-
-  function closeTimelineModal() {
-    $("timelineModal").hidden = true;
-    $("timelineReviewVideo").pause();
-  }
-
-  async function browseTo(path) {
-    state.timelineBrowsePath = path || "";
-    const res = await fetch(`/api/timeline/browse?path=${encodeURIComponent(path || "")}`);
-    const data = await res.json();
-    if (data.error) {
-      appendLog("!! " + data.error);
-      return;
-    }
-    state.timelineBrowse = data;
-    renderBreadcrumb(data);
-    renderBrowserList(data);
-  }
-
-  function renderBreadcrumb(data) {
-    const el = $("timelineBreadcrumb");
-    el.innerHTML = "";
-    const rootBtn = document.createElement("button");
-    rootBtn.type = "button";
-    rootBtn.textContent = "sessions";
-    rootBtn.onclick = () => browseTo(".");
-    el.append(rootBtn);
-    const parts = data.path && data.path !== "." ? data.path.split("/").filter(Boolean) : [];
-    let acc = "";
-    parts.forEach((part) => {
-      acc = acc ? `${acc}/${part}` : part;
-      const sep = document.createElement("span");
-      sep.className = "sep";
-      sep.textContent = "/";
-      el.append(sep);
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = part;
-      const target = acc;
-      btn.onclick = () => browseTo(target);
-      el.append(btn);
-    });
-  }
-
-  function renderBrowserList(data) {
-    const list = $("timelineBrowserList");
-    list.innerHTML = "";
-    if (data.parent !== null && data.parent !== undefined) {
-      const up = document.createElement("div");
-      up.className = "browse-dir";
-      up.innerHTML = `<div class="icon">⬅</div><div class="nm">..</div>`;
-      up.onclick = () => browseTo(data.parent);
-      list.append(up);
-    }
-    (data.dirs || []).forEach((d) => {
-      const div = document.createElement("div");
-      div.className = "browse-dir";
-      div.innerHTML = `<div class="icon">📁</div><div class="nm">${d.name}</div>`;
-      div.onclick = () => browseTo(d.path);
-      list.append(div);
-    });
-    (data.files || []).forEach((f) => {
-      const div = document.createElement("div");
-      div.className = "browse-file";
-      const count = state.timelineSeq.filter((c) => c.path === f.path).length;
-      div.innerHTML = `
-        <div class="thumb"><video src="/media/session/${f.path.split("/").map(encodeURIComponent).join("/")}" muted preload="metadata"></video></div>
-        <div class="nm">${f.name}</div>
-        <div class="meta">${f.duration ? f.duration.toFixed(2) + "s" : ""}</div>
-        ${count ? `<div class="pickcount">${count}</div>` : ""}
-      `;
-      forceThumbFrame(div.querySelector("video"));
-      div.classList.toggle("selected", count > 0);
-      div.onclick = () => addClipToSequence(f);
-      list.append(div);
-    });
-    if (!data.dirs?.length && !data.files?.length) {
-      const empty = document.createElement("div");
-      empty.className = "browser-empty";
-      empty.textContent = "No videos in this directory.";
-      list.append(empty);
-    }
-  }
-
-  function addClipToSequence(f) {
-    state.timelineSeq.push({ path: f.path, name: f.name, duration: f.duration });
-    renderSequence();
-    renderBrowserList(state.timelineBrowse);
-  }
-
-  function removeClipFromSequence(index) {
-    state.timelineSeq.splice(index, 1);
-    renderSequence();
-    if (state.timelineBrowse) renderBrowserList(state.timelineBrowse);
-  }
-
-  function clearSequence() {
-    state.timelineSeq = [];
-    renderSequence();
-    if (state.timelineBrowse) renderBrowserList(state.timelineBrowse);
-  }
-
-  let dragFromIndex = null;
-
-  function reorderSequence(from, to) {
-    if (from === to || from == null || to == null) return;
-    const [moved] = state.timelineSeq.splice(from, 1);
-    state.timelineSeq.splice(to, 0, moved);
-    renderSequence();
-  }
-
-  function renderSequence() {
-    const track = $("timelineTrack");
-    track.innerHTML = "";
-    $("timelinePlaceholder").hidden = state.timelineSeq.length > 0;
-    state.timelineSeq.forEach((item, index) => {
-      const div = document.createElement("div");
-      div.className = "timeline-item";
-      div.draggable = true;
-      div.dataset.index = index;
-      div.innerHTML = `
-        <div class="drag-handle">⠿</div>
-        <div class="seq">${index + 1}</div>
-        <video src="/media/session/${item.path.split("/").map(encodeURIComponent).join("/")}" muted preload="metadata"></video>
-        <div class="info">
-          <div class="nm">${item.name}</div>
-          <div class="meta">${item.duration ? item.duration.toFixed(2) + "s" : ""}</div>
-        </div>
-        <button class="remove" type="button" data-index="${index}">✕</button>
-      `;
-      forceThumbFrame(div.querySelector("video"));
-      div.addEventListener("dragstart", (e) => {
-        dragFromIndex = index;
-        div.classList.add("dragging");
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", String(index));
-      });
-      div.addEventListener("dragend", () => {
-        div.classList.remove("dragging");
-        dragFromIndex = null;
-        [...track.children].forEach((c) => c.classList.remove("drag-over"));
-      });
-      div.addEventListener("dragover", (e) => {
-        if (dragFromIndex === null) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        div.classList.add("drag-over");
-      });
-      div.addEventListener("dragleave", () => div.classList.remove("drag-over"));
-      div.addEventListener("drop", (e) => {
-        e.preventDefault();
-        div.classList.remove("drag-over");
-        if (dragFromIndex === null) return;
-        reorderSequence(dragFromIndex, index);
-      });
-      track.appendChild(div);
-    });
-    const slot = document.createElement("div");
-    slot.className = "timeline-add-slot";
-    slot.textContent = state.timelineSeq.length ? "+ pick another clip on the left" : "+ pick a clip on the left to start";
-    track.appendChild(slot);
-    $("renderTimeline").disabled = state.timelineSeq.length === 0;
-  }
-
-  async function combineVideos() {
-    if (state.timelineSeq.length === 0) {
-      appendLog("!! Pick at least one clip to combine.");
-      return;
-    }
-    const name = $("timelineOutputName").value.trim();
-    $("renderTimeline").disabled = true;
-    $("timelineRenderStatus").textContent = `Combining ${state.timelineSeq.length} clip${state.timelineSeq.length > 1 ? "s" : ""}…`;
-    appendLog(`$ combine ${state.timelineSeq.map((c) => c.path).join(" + ")}`);
-    try {
-      const res = await fetch("/api/timeline/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clips: state.timelineSeq.map((c) => c.path), name }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        appendLog("!! " + data.error);
-        $("timelineRenderStatus").textContent = "Failed — see terminal log.";
-        return;
-      }
-      appendLog(`Combined video saved as ${data.name}`);
-      $("timelineRenderStatus").textContent = `Saved ${data.name}`;
-      state.timelineList = data.timeline || [];
-      renderTimelineList();
-      showReview(data.name);
-      $("timelineReviewVideo").play().catch(() => {});
-      state.timelineSeq = [];
-      renderSequence();
-      if (state.timelineBrowse) renderBrowserList(state.timelineBrowse);
-    } finally {
-      $("renderTimeline").disabled = state.timelineSeq.length === 0;
-    }
-  }
-
-  // Timeline event listeners
-  $("closeTimeline").onclick = closeTimelineModal;
-  $("clearTimeline").onclick = clearSequence;
-  $("renderTimeline").onclick = combineVideos;
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !$("timelineModal").hidden) closeTimelineModal();
-  });
-
-  $("timelineTrack").addEventListener("click", (e) => {
-    if (e.target.classList.contains("remove")) {
-      removeClipFromSequence(parseInt(e.target.dataset.index, 10));
-    }
-  });
-
   document.addEventListener("click", (e) => {
-    if (e.target.closest("#pathButtons") || e.target.closest("#pathPanel")) return;
-    $("pathPanel").hidden = true;
-    [...$("pathButtons").children].forEach((b) => b.classList.remove("on"));
-  });
-
-  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".menuwrap")) closePopmenus();
     const command = document.querySelector("details.cmd");
     if (command?.open && !e.target.closest("details.cmd")) command.open = false;
   });
-
-  // Terminal resize functionality
-  const resizeHandle = $("resizeHandle");
-  const resizeBtn = $("resizeBtn");
-  const consoleContainer = $("consoleContainer");
-  const stageContainer = document.querySelector(".stage");
-  let isResizing = false;
-  let startY = 0;
-  let startHeight = 0;
-
-  console.log("Resize handle found:", !!resizeHandle);
-  console.log("Resize button found:", !!resizeBtn);
-  console.log("Console container found:", !!consoleContainer);
-
-  // Button drag to resize terminal
-  resizeBtn.addEventListener("mousedown", (e) => {
-    console.log("Resize button drag started");
-    isResizing = true;
-    startY = e.clientY;
-    startHeight = consoleContainer.offsetHeight;
-    document.body.style.cursor = "ns-resize";
-    document.body.style.userSelect = "none";
-    resizeBtn.classList.add("resizing");
-    e.preventDefault();
-  });
-
-  // Button click to toggle terminal size
-  resizeBtn.addEventListener("click", (e) => {
-    if (isResizing) {
-      e.preventDefault();
-      return;
-    }
-    const currentHeight = consoleContainer.offsetHeight;
-    const newHeight = currentHeight > 250 ? 150 : 300;
-    consoleContainer.style.height = `${newHeight}px`;
-  });
-
-  resizeHandle.addEventListener("mousedown", (e) => {
-    console.log("Resize started");
-    isResizing = true;
-    startY = e.clientY;
-    startHeight = consoleContainer.offsetHeight;
-    document.body.style.cursor = "ns-resize";
-    document.body.style.userSelect = "none";
-    resizeHandle.classList.add("resizing");
-    e.preventDefault();
-  });
-
-  document.addEventListener("mousemove", (e) => {
-    if (!isResizing) return;
-    console.log("Resizing:", e.clientY, "delta:", startY - e.clientY);
-
-    const deltaY = startY - e.clientY;
-    const newHeight = Math.max(150, Math.min(startHeight + deltaY, 500));
-    consoleContainer.style.height = `${newHeight}px`;
-  });
-
-  document.addEventListener("mouseup", () => {
-    if (isResizing) {
-      console.log("Resize ended");
-      isResizing = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      resizeHandle.classList.remove("resizing");
-    }
-  });
-
-  // Touch support for mobile
-  resizeHandle.addEventListener("touchstart", (e) => {
-    console.log("Touch resize started");
-    isResizing = true;
-    startY = e.touches[0].clientY;
-    startHeight = consoleContainer.offsetHeight;
-    resizeHandle.classList.add("resizing");
-    e.preventDefault();
-  });
-
-  document.addEventListener("touchmove", (e) => {
-    if (!isResizing) return;
-    console.log("Touch resizing:", e.touches[0].clientY, "delta:", startY - e.touches[0].clientY);
-
-    const deltaY = startY - e.touches[0].clientY;
-    const newHeight = Math.max(150, Math.min(startHeight + deltaY, 500));
-    consoleContainer.style.height = `${newHeight}px`;
-  });
-
-  document.addEventListener("touchend", () => {
-    if (isResizing) {
-      console.log("Touch resize ended");
-      isResizing = false;
-      resizeHandle.classList.remove("resizing");
-    }
-  });
-
-  connect();
-  sync();
+  document.addEventListener("keydown", onGlobalKeydown);
+  window.addEventListener("beforeunload", () => saveSettings.flush());
 }
 
-init();
+async function init() {
+  applyTheme(safeStorage(() => localStorage.getItem(THEME_KEY), null) || "system");
+  renderNotifyButton();
+  buildCanvasControls();
+  bindForm();
+  bindChrome();
+  bindTerminal();
+  bindTimeline();
+  const cfg = await api("/api/config");
+  state.cfg = cfg;
+  state.legalFrames = cfg.legal_frames || state.legalFrames;
+  state.maxPixels = cfg.max_pixels || state.maxPixels;
+  state.sessions = cfg.sessions || [];
+  state.interactive = cfg.interactive || { loaded: false };
+  $("terminalForm").hidden = !cfg.allow_shell;
+  renderModelDot(cfg.model_info);
+  if (!cfg.ffmpeg || !cfg.ffprobe) {
+    toast("ffmpeg/ffprobe not found — thumbnails, frame extraction and the timeline won't work.", { kind: "error", hint: "Install with `brew install ffmpeg`, or set H3_FFMPEG / H3_FFPROBE." });
+  }
+  if (!cfg.model_info.has_fl2va || !cfg.model_info.h3_runs) openModelModal(false);
+  await activateSession(cfg.session);
+}
+
+init().catch((err) => { console.error(err); toast(`h3 studio failed to start: ${err.message}`, { kind: "error", timeout: 0 }); });
