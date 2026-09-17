@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	helm "github.com/janishar/helmstudio/packages/helm-runtime-sdk/go"
 )
 
 const maxJSONBody = 4 << 20
@@ -83,6 +85,10 @@ func (a *App) routes() {
 	m := a.mux
 	m.HandleFunc("GET /{$}", a.index)
 	m.HandleFunc("GET /static/{path...}", a.static)
+	// helmstudio's same-origin proxy: helm-css, the launcher's theme stream and
+	// this studio's hue for the page, with no token in it. Standalone it answers
+	// 404, and the page keeps its vendored helm-css and its own theme switch.
+	m.Handle(helm.ProxyPrefix, helm.Proxy(helm.ProxyFromEnv()))
 
 	m.HandleFunc("GET /api/config", a.config)
 	m.HandleFunc("GET /api/model", a.modelInfo)

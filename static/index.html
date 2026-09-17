@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>h3 studio</title>
+<!-- helm-css: the vendored copy first, then the daemon's through the helm proxy,
+     so the live one wins when hosted and the vendored one stands in alone
+     (helmstudio docs/design/04-packages.md §8). accent.css is this studio's hue. -->
+<link rel="stylesheet" href="/static/vendor/helm/helm.css">
+<link rel="stylesheet" href="/helm/sdk/v1/helm.css">
+<link rel="stylesheet" href="/helm/accent.css">
 <link rel="stylesheet" href="/static/style.css">
 <script>
 // Apply the saved theme before first paint to avoid a flash of the wrong theme.
@@ -13,6 +19,11 @@
     if (saved === "light" || saved === "dark") document.documentElement.dataset.theme = saved;
   } catch (e) {}
 })();
+</script>
+<script type="module">
+// Under helmstudio, follow the launcher's theme. Standalone there is no /helm/,
+// the import fails, and the saved theme above stays in charge.
+import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(() => {});
 </script>
 </head>
 <body>

@@ -15,9 +15,11 @@ const NOTIFY_KEY = "h3studio-notify";
 /* ── theme ──────────────────────────────────────────────────────── */
 
 function applyTheme(mode) {
+  [...$("themeSwitch").children].forEach((b) => b.classList.toggle("on", b.dataset.theme === mode));
+  // Under helmstudio the launcher's theme wins; the switch is hidden while it does.
+  if (document.documentElement.hasAttribute("data-helm-theme-follows")) return;
   if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
   else delete document.documentElement.dataset.theme;
-  [...$("themeSwitch").children].forEach((b) => b.classList.toggle("on", b.dataset.theme === mode));
 }
 
 /* ── canvas ─────────────────────────────────────────────────────── */
