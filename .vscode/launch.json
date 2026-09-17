@@ -2,6 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "h3 studio (under helm dev)",
+      "type": "go",
+      "request": "attach",
+      "mode": "local",
+      "processId": "h3studio",
+      "preLaunchTask": "debug: h3 studio (helm dev)",
+      "postDebugTask": "stop: h3 studio"
+    },
+    {
       "name": "h3 studio (custom paths)",
       "type": "go",
       "request": "launch",

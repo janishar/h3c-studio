@@ -5,7 +5,12 @@
       "label": "build: h3studio (dist)",
       "type": "shell",
       "command": "go",
-      "args": ["build", "-o", "./dist/h3studio", "."],
+      "args": [
+        "build",
+        "-o",
+        "./dist/h3studio",
+        "."
+      ],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
@@ -16,13 +21,19 @@
         "kind": "build",
         "isDefault": true
       },
-      "problemMatcher": ["$go"]
+      "problemMatcher": [
+        "$go"
+      ]
     },
     {
       "label": "test: go (race)",
       "type": "shell",
       "command": "go",
-      "args": ["test", "-race", "./..."],
+      "args": [
+        "test",
+        "-race",
+        "./..."
+      ],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
@@ -33,15 +44,97 @@
         "kind": "test",
         "isDefault": true
       },
-      "problemMatcher": ["$go"]
+      "problemMatcher": [
+        "$go"
+      ]
     },
     {
       "label": "test: canvas.js (node)",
       "type": "shell",
       "command": "node",
-      "args": ["--test", "static/canvas.test.js"],
-      "options": { "cwd": "${workspaceFolder}" },
+      "args": [
+        "--test",
+        "static/canvas.test.js"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "run: h3 studio (helm dev)",
+      "detail": "scripts/dev.sh: builds, then runs under helm dev so the /helm/ proxy and the studio API are real",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/dev.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H3_MODEL": "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "h3-studio",
+        "pattern": {
+          "regexp": "^h3 studio problem: (.*):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^h3 studio: (building|starting)",
+          "endsPattern": "h3 studio  →  http://"
+        }
+      }
+    },
+    {
+      "label": "debug: h3 studio (helm dev)",
+      "detail": "the same, built with -N -l so Delve can attach and step through the source",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/dev.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H3_MODEL": "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
+          "H3_DEBUG": "1"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "h3-studio",
+        "pattern": {
+          "regexp": "^h3 studio problem: (.*):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^h3 studio: (building|starting)",
+          "endsPattern": "h3 studio  →  http://"
+        }
+      }
+    },
+    {
+      "label": "stop: h3 studio",
+      "detail": "ends the helm dev that scripts/dev.sh last started, which stops the studio with it",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/dev.sh",
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "problemMatcher": []
     }
   ]

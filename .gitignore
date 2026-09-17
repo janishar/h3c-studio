@@ -8,3 +8,8 @@ __debug*
 server/h3studio
 docs/tasks/*
 .DS_Store
+
+# helm dev keeps the studio's whole tree here when it runs standalone, and
+# scripts/dev.sh keeps its pid file beside it.
+/.helm/
+/.cache/

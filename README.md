@@ -237,10 +237,41 @@ Run & Debug panel (`Cmd+Shift+D`, pick one, `F5`):
 | **h3 studio (debug - source)** | Runs from source with the embedded UI, for stepping through the server. |
 | **h3 studio (LAN - 0.0.0.0, no auth)** | Binds to all interfaces and prompts for the host name other machines use — see [Security](#security). |
 | **h3 studio (dist build)** | Builds and runs `dist/h3studio` under the debugger. |
+| **h3 studio (under helm dev)** | Runs it under helmstudio's platform API and attaches the debugger — see [Running under helmstudio](#running-under-helmstudio). |
 
 All but "custom paths" have `--model` hardcoded to a sample path — edit it in
 `.vscode/launch.json`, or use "custom paths". `.vscode/tasks.json` adds
-**build: h3studio (dist)**, **test: go (race)** and **test: canvas.js (node)**.
+**build: h3studio (dist)**, **test: go (race)** and **test: canvas.js (node)**,
+and the three below.
+
+### Running under helmstudio
+
+The configurations above run the server on its own, which is the fastest way
+to work on it. To run it the way a user does — with sessions, assets and the
+gallery going through helmstudio, and the page taking helm-css, the theme and
+this studio's hue from the `/helm/` proxy — run it under `helm dev`:
+
+```bash
+H3_MODEL=/path/to/MiniMax-H3 bash scripts/dev.sh
+bash scripts/dev.sh stop
+```
+
+`helm` comes from [helmstudio's installer][helm-install] and needs no
+helmstudio checkout; `H3_MODEL` points at a MiniMax-H3 directory you already
+have, which is linked read-only rather than downloaded. Everything the studio
+keeps goes to `.helm/` beside the repository, which is gitignored.
+
+**`helm dev` runs no build steps** — the checkout is yours — so `scripts/dev.sh`
+builds `dist/h3studio` first. A stale binary is the difference between the
+`/helm/` proxy answering and returning 404.
+
+From VS Code the same three are **run: h3 studio (helm dev)**, **debug: h3
+studio (helm dev)** and **stop: h3 studio**. The launch configuration *h3
+studio (under helm dev)* runs the debug task — which builds with `-N -l` so
+Delve can step through what the source says — and attaches to the studio
+`helm dev` started.
+
+[helm-install]: https://github.com/janishar/helmstudio#getting-started
 
 ## Features
 
