@@ -250,7 +250,15 @@ log tab are simply absent, Create Timeline opens the built-in editor, and the
 page keeps its vendored copy of helm-css and its own theme switch. The same
 binary does both; it decides by whether helmstudio handed it an API to talk to.
 
-To run it that way yourself, see [Running under helmstudio](#running-under-helmstudio).
+**Getting it that way.** h3 studio is one of helmstudio's catalogue studios, so
+there is nothing to clone: install helmstudio, open its **Studios** list, and
+install h3 studio from there. It reads this repository's own `helmstudio.yaml`,
+shows you every command it will run and every weight it will fetch before
+anything executes, and takes it from there — including the MiniMax-H3
+checkpoint, or a link to one you already have.
+
+If you are working *on* h3 studio rather than using it, run it from a checkout
+instead: [Running under helmstudio](#running-under-helmstudio).
 
 [helmstudio]: https://github.com/janishar/helmstudio
 
@@ -275,8 +283,13 @@ and the three below.
 
 ### Running under helmstudio
 
+This is the developer's path — a checkout, run against helmstudio's platform
+API without installing anything into helmstudio. Someone *using* h3 studio
+installs it from helmstudio's catalogue instead; see
+[With helmstudio](#with-helmstudio).
+
 The configurations above run the server on its own, which is the fastest way
-to work on it. To run it the way a user does — takes adopted into helmstudio's
+to work on it. To get what a user gets — takes adopted into helmstudio's
 gallery, renders reported as jobs, and the page taking helm-css, the theme and
 this studio's hue from the `/helm/` proxy — run it under `helm dev`:
 
