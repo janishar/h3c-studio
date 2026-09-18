@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Launch h3 studio on its own, from anywhere: under `helm dev`, which keeps
-# everything h3 studio keeps in ./.helm, and serves helm-css, the theme and
-# this studio's hue through the /helm/ proxy the server mounts.
+# Launch h3 studio from a checkout, under `helm dev`: it keeps everything the
+# studio keeps in ./.helm, passes that directory as --root, and serves helm-css,
+# the theme and this studio's hue through the /helm/ proxy the server mounts.
+# The studio does not start without it — there is no standalone mode.
 #
 #   [H3_MODEL=<MiniMax-H3 dir>] [HELM=<helm>] [H3_DLV=<port>] bash scripts/run.sh [helm dev flags]
 #   bash scripts/run.sh stop

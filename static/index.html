@@ -21,8 +21,8 @@
 })();
 </script>
 <script type="module">
-// Under helmstudio, follow the launcher's theme. Standalone there is no /helm/,
-// the import fails, and the saved theme above stays in charge.
+// Follow the launcher's theme. If /helm/ cannot be reached the import fails and
+// the saved theme above stays in charge.
 import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(() => {});
 </script>
 </head>

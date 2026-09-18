@@ -86,8 +86,9 @@ func (a *App) routes() {
 	m.HandleFunc("GET /{$}", a.index)
 	m.HandleFunc("GET /static/{path...}", a.static)
 	// helmstudio's same-origin proxy: helm-css, the launcher's theme stream and
-	// this studio's hue for the page, with no token in it. Standalone it answers
-	// 404, and the page keeps its vendored helm-css and its own theme switch.
+	// this studio's hue for the page, with no token in it. With nothing behind
+	// it, it answers 404 and the page keeps its vendored helm-css and its own
+	// theme switch.
 	m.Handle(helm.ProxyPrefix, helm.Proxy(helm.ProxyFromEnv()))
 
 	m.HandleFunc("GET /api/config", a.config)

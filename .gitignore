@@ -7,7 +7,7 @@ server/h3studio
 docs/tasks/*
 .DS_Store
 
-# helm dev keeps the studio's whole tree here when it runs standalone, and
-# scripts/dev.sh keeps its pid file beside it.
+# helm dev keeps the studio's whole tree here, sessions included, and
+# scripts/run.sh keeps its pid file and the debugger's shim beside it.
 /.helm/
 /.cache/

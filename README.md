@@ -3,11 +3,17 @@
 **A local web control surface for [h3.c](https://github.com/janishar/h3.c)** — native
 MiniMax-H3 video/audio inference on Apple Silicon.
 
-h3 studio is a Go stdlib-only web server (no JS build step, no third-party Go
-dependencies) that drives the `h3` binary: it builds the CLI
-arguments, runs one-shot or interactive sessions, manages references and
-anchors, queues renders, chains shots together, and surfaces live profiling
-output — all from a browser tab, with nothing sent off your machine.
+h3 studio is a Go web server (no JS build step, one Go dependency) that drives
+the `h3` binary: it builds the CLI arguments, runs one-shot or interactive
+sessions, manages references and anchors, queues renders, chains shots
+together, and surfaces live profiling output — all from a browser tab, with
+nothing sent off your machine.
+
+It runs as a [helmstudio][helmstudio] studio, and only that way: helmstudio
+installs it, launches it, hands it the directory it keeps sessions in, and
+takes every finished take into the library it shares with the other studios.
+The one Go dependency is helmstudio's runtime SDK. Start at
+[Set up helmstudio](#set-up-helmstudio).
 
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%28Apple%20Silicon%29-lightgrey?logo=apple)](#requirements)
@@ -37,6 +43,11 @@ a Python stack or a node-graph app to get there.
 - [Installation](#installation)
 - [Downloading the weights (deduplicated)](#downloading-the-weights-deduplicated)
 - [Usage](#usage)
+  - [Set up helmstudio](#set-up-helmstudio)
+  - [Running](#running)
+  - [What helmstudio adds](#what-helmstudio-adds)
+  - [Running from a checkout](#running-from-a-checkout)
+  - [Run from VS Code](#run-from-vs-code)
 - [Features](#features)
 - [Sessions and state](#sessions-and-state)
 - [Notes for an external drive](#notes-for-an-external-drive)
@@ -72,7 +83,13 @@ a Python stack or a node-graph app to get there.
 
 ### Toolchain
 
-- **Go 1.27+** to build h3 studio itself (`go.mod` pins `go 1.27`).
+- **helmstudio's `helm`** — what runs h3 studio, and what installs it; the
+  studio does not start on its own. See
+  [Set up helmstudio](#set-up-helmstudio). The rest of this list is what its
+  manifest asks for before it will install the studio (`requires.tools`).
+- **Go 1.27+** to build h3 studio itself (`go.mod` pins `go 1.27.1`). The build
+  fetches one module — helmstudio's runtime SDK — so the first build wants the
+  Go module proxy; nothing else is vendored, generated or downloaded.
 - **Command Line Tools / clang** to build the `h3` binary (h3.c's `Makefile`
   links `Foundation`, `Metal`, `MetalPerformanceShaders`,
   `MetalPerformanceShadersGraph`, and `Accelerate`).
@@ -94,6 +111,14 @@ license and usage terms on Hugging Face before downloading — it is not
 covered by this repository's license (see [License](#license)).
 
 ## Installation
+
+Installing h3 studio is helmstudio's job: it runs the steps below itself, from
+this repository's own manifest. If you want to *use* the studio, that is the
+whole of it — see [Set up helmstudio](#set-up-helmstudio).
+
+What follows is the same thing by hand, for working on the studio. It ends at a
+built binary, which does not run on its own; starting it is
+[Running from a checkout](#running-from-a-checkout).
 
 ### 1. Clone with the h3.c submodule
 
@@ -134,7 +159,10 @@ below before running this step.
 GOCACHE=$(pwd)/.gocache go build -o ./dist/h3studio .
 ```
 
-The web UI is embedded in the binary, so `dist/h3studio` runs on its own.
+The web UI is embedded in the binary, and the first build downloads
+helmstudio's runtime SDK from the Go module proxy. The binary does not start by
+itself — it wants a helmstudio to run under, which
+[Running from a checkout](#running-from-a-checkout) gives it.
 
 ## Downloading the weights (deduplicated)
 
@@ -193,123 +221,129 @@ du -sh MiniMax-H3                 # expect ~66 GB
 
 ## Usage
 
-### Running
+### Set up helmstudio
 
-```bash
-./dist/h3studio --h3 ./h3c/h3 --model /path/to/MiniMax-H3
+h3 studio runs under [helmstudio][helmstudio] and does not start without it.
+Where it keeps sessions and what it records takes with both come from whatever
+launched it, and it invents neither — started by hand, it stops:
+
+```
+h3 studio runs under helmstudio. HELM_API is not set, so there is no platform to run under.
+  installed:  start it from helmstudio's Studios list
+  a checkout: bash scripts/run.sh
 ```
 
-Open http://127.0.0.1:8710. The paths are remembered in `sessions/h3.json` and
-`sessions/model.json`, so later runs can omit them; a flag or environment
-variable always wins over the remembered value.
+So installing it is helmstudio's job, and there is nothing to clone:
 
-For front-end work, add `--dev` to serve `static/` from disk without caching —
-edit a file and refresh the browser.
+1. **Install helm**, helmstudio's launcher
+   ([other ways to install it][helm-install]):
+
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/janishar/helmstudio/main/installer/install.sh)"
+   ```
+
+2. **Install h3 studio from helmstudio's Studios list.** It reads this
+   repository's own [`helmstudio.yaml`](helmstudio.yaml) and shows you every
+   command it will run and every weight it will fetch before anything executes:
+   the h3.c engine (`make -j8` in the submodule), the studio server
+   (`go build`), and the MiniMax-H3 checkpoint — or a link to one you already
+   have. `Ref2VA` is optional there, so the install can be `FL2VA` alone
+   (~62 GB) with References mode added later.
+
+3. **Start it from helmstudio**, which gives it a port, the `FL2VA` path and a
+   data directory of its own, and opens its page.
+
+Working *on* h3 studio rather than using it means a checkout and `helm dev`
+instead — see [Running from a checkout](#running-from-a-checkout).
+
+[helmstudio]: https://github.com/janishar/helmstudio
+
+[helm-install]: https://github.com/janishar/helmstudio#getting-started
+
+### Running
+
+What helmstudio launches is the same `dist/h3studio` its build steps produced:
+
+```bash
+./dist/h3studio --h3 ./h3c/h3 --model <FL2VA> --port <port> --root <data>
+```
+
+That is `helmstudio.yaml`'s `processes[0].cmd` with `{port}` and `{data}`
+filled in. The paths are remembered in `<data>/sessions/h3.json` and
+`<data>/sessions/model.json`, so a later launch can omit them; a flag or
+environment variable always wins over the remembered value.
 
 **There is no authentication** — see [Security](#security) before binding to
 anything other than `127.0.0.1`.
 
 | Flag | Default | Description |
 | --- | --- | --- |
+| `--root` | *(required)* | Directory holding `sessions/` — helmstudio's data directory for this studio. The studio creates none of its own and will not start without one. |
 | `--h3` | `$H3STUDIO_H3`, else last used | Path to the built `h3` binary. |
 | `--model` | `$H3STUDIO_MODEL`, else last used | Path to the MiniMax-H3 checkpoint directory. |
 | `--host` | `127.0.0.1` | Bind address. A warning is printed for anything but loopback. |
-| `--port` | `8710` | Bind port. |
-| `--dev` | `false` | Serve `static/` from disk with `Cache-Control: no-store`. |
+| `--port` | `8710` | Bind port; helmstudio passes the one it allocated. |
+| `--dev` | `false` | Serve `static/` from disk with `Cache-Control: no-store`. It looks where the studio was launched from, then beside the binary — not under `--root`, which holds no source. |
 | `--allow-shell` | `false` | Enable the `$` shell terminal and changing the h3 binary from the browser. |
 | `--allow-host` | *(none)* | Extra `Host` names to accept (comma-separated). IP addresses and `localhost` are always accepted. |
-| `--root` | next to the binary, or the current directory | Directory holding `sessions/`. |
 
 Choose **One-shot** or **Interactive** in the render bar at the bottom of the
 left pane. Interactive h3.c starts when you click **Load h3.c** or send the
 first interactive render, so starting the studio itself never loads the model.
 **⌘/Ctrl+Enter** renders from anywhere; **⇧⌘/Ctrl+Enter** queues three seeds.
 
-That is h3 studio on its own: everything it makes stays under `--root`, and it
-needs nothing else installed.
+### What helmstudio adds
 
-### With helmstudio
-
-[helmstudio][helmstudio] installs and runs studios, and keeps what they make in
-one library. h3 studio runs under it without changing how it works — the same
-server, the same page, the same takes on disk — and gains four things it cannot
-do alone:
+h3 studio draws its own page — the same form, the same takes rail, the same
+viewer, the same terminal — and helmstudio adds four things around it:
 
 | | |
 | --- | --- |
-| **Gallery** | Every take this studio records, beside what other studios made, in one grid. The **Gallery** button in the top bar. |
-| **Timeline** | **Create Timeline** opens a helmstudio sequence: clips from any studio, trimmed and dissolved, with an export it runs for you. On its own that button still opens h3 studio's own combine-videos editor. |
-| **Render log** | A third tab in the Terminal panel, streaming the render as helmstudio sees it — it reconnects after a dropped stream and tells you what it missed. |
+| **Gallery** | The **Gallery** button in the top bar opens helmstudio's own grid over the takes this studio recorded, live — a take that finishes appears without a reload. The grid is scoped to this studio; helmstudio's library is where these sit beside what other studios made. |
+| **Timeline** | **Create Timeline** opens a helmstudio sequence: clips trimmed and dissolved, exported as a job it runs for you. Clips are picked from this studio's takes, though the sequence is helmstudio's and can hold any studio's. |
+| **Render log** | A third tab in the Terminal panel, streaming the render as helmstudio sees it — it reconnects after a dropped stream and tells you what it missed. The pane's **follow** and **Clear** belong to Output and are hidden while this tab is showing — helm-terminal brings its own. |
 | **The launcher** | A render appears in helmstudio as a job with its progress, so what this studio is doing is visible from outside it. |
 
-It also wears helmstudio's theme and this studio's own colour, taken live from
-whatever is running it.
+All of it arrives through the same-origin `/helm/` proxy the server mounts, so
+the page holds no token of helmstudio's. The theme and this studio's own colour
+come the same way, live from whatever is running it.
 
-Nothing is lost when helmstudio is not there. The Gallery button and the Render
-log tab are simply absent, Create Timeline opens the built-in editor, and the
-page keeps its vendored copy of helm-css and its own theme switch. The same
-binary does both; it decides by whether helmstudio handed it an API to talk to.
+If those components cannot be loaded while the page is opening, the page still
+works: it falls back to its vendored copy of helm-css and its own theme switch,
+the Gallery button and the Render log tab stay hidden, and **Create Timeline**
+opens h3 studio's own combine-videos editor.
 
-**Getting it that way.** h3 studio is one of helmstudio's catalogue studios, so
-there is nothing to clone: install helmstudio, open its **Studios** list, and
-install h3 studio from there. It reads this repository's own `helmstudio.yaml`,
-shows you every command it will run and every weight it will fetch before
-anything executes, and takes it from there — including the MiniMax-H3
-checkpoint, or a link to one you already have.
-
-If you are working *on* h3 studio rather than using it, run it from a checkout
-instead: [Running under helmstudio](#running-under-helmstudio).
-
-[helmstudio]: https://github.com/janishar/helmstudio
-
-### Run from VS Code
-
-`.vscode/launch.json` ships ready-made configurations for the Go extension's
-Run & Debug panel (`Cmd+Shift+D`, pick one, `F5`):
-
-| Configuration | What it does |
-| --- | --- |
-| **h3 studio (dev - static from disk)** | Runs from source with `--dev` on `127.0.0.1:8710` — the everyday development config. |
-| **h3 studio (custom paths)** | Same, but prompts for the `--h3` and `--model` paths. |
-| **h3 studio (debug - source)** | Runs from source with the embedded UI, for stepping through the server. |
-| **h3 studio (LAN - 0.0.0.0, no auth)** | Binds to all interfaces and prompts for the host name other machines use — see [Security](#security). |
-| **h3 studio (dist build)** | Builds and runs `dist/h3studio` under the debugger. |
-| **h3 studio** | Runs it under helmstudio's platform API and attaches the debugger — see [Running under helmstudio](#running-under-helmstudio). |
-
-All but "custom paths" have `--model` hardcoded to a sample path — edit it in
-`.vscode/launch.json`, or use "custom paths". `.vscode/tasks.json` adds
-**build: h3studio (dist)**, **test: go (race)** and **test: canvas.js (node)**,
-and the three below.
-
-### Running under helmstudio
+### Running from a checkout
 
 This is the developer's path — a checkout, run against helmstudio's platform
 API without installing anything into helmstudio. Someone *using* h3 studio
-installs it from helmstudio's catalogue instead; see
-[With helmstudio](#with-helmstudio).
-
-The configurations above run the server on its own, which is the fastest way
-to work on it. To get what a user gets — takes adopted into helmstudio's
-gallery, renders reported as jobs, and the page taking helm-css, the theme and
-this studio's hue from the `/helm/` proxy — run it under `helm dev`:
-
-Sessions are still h3 studio's own directories under `--root`; only what a take
-becomes is helmstudio's.
+installs it from the catalogue instead; see
+[Set up helmstudio](#set-up-helmstudio).
 
 ```bash
 H3_MODEL=/path/to/MiniMax-H3 bash scripts/run.sh
 bash scripts/run.sh stop
 ```
 
+The script runs the studio under `helm dev`, which is what gives it the
+platform it will not start without, a data directory to keep sessions in, and
+the `/helm/` proxy the page reads helm-css, the theme and this studio's hue
+from.
+
 `helm` comes from [helmstudio's installer][helm-install] and needs no
 helmstudio checkout; `H3_MODEL` points at a MiniMax-H3 directory you already
-have, which is linked read-only rather than downloaded. `HELM` names a
-particular helm if you do not want the one on `PATH`. Everything the studio
-keeps goes to `.helm/` beside the repository, which is gitignored.
+have, which is linked per file rather than downloaded, so nothing is written
+into it. `HELM` names a particular helm if you do not want the one on `PATH`.
+Everything the studio keeps — sessions included — goes to `.helm/` at the top
+of the checkout, and what the script itself makes (its pid file, the debugger's
+shim) to `.cache/h3-studio` and `dist/`. All three are gitignored, so a run
+leaves the working tree as it found it.
 
 **`helm dev` runs no build steps** — the checkout is yours — so the script
 builds `dist/h3studio` first. A stale binary is the difference between the
-`/helm/` proxy answering and returning 404.
+`/helm/` proxy answering and returning 404. The manifest's command carries no
+`--dev`, so a front-end edit means running the script again rather than
+refreshing the browser.
 
 To debug it there, set `H3_DLV` to a port:
 
@@ -324,13 +358,20 @@ It is built with `-N -l` so stepping follows the source, and Delve is given
 `--continue` so the studio starts rather than waiting for a client. A run
 without `H3_DLV` builds a normal binary over the shim again.
 
-From VS Code the same three are **run: h3 studio**, **debug: h3 studio** and
-**stop: h3 studio**, and the *h3 studio* launch configuration runs the debug
-task and attaches to `127.0.0.1:2345`.
-
 [dlv]: https://github.com/go-delve/delve
 
-[helm-install]: https://github.com/janishar/helmstudio#getting-started
+### Run from VS Code
+
+There is one launch configuration, because there is one way to run the studio.
+**h3 studio** (`Cmd+Shift+D`, then `F5`) runs the **debug: h3 studio** task —
+`scripts/run.sh` with `H3_DLV=2345` — and attaches the Go extension's debugger
+to the Delve in front of the binary; ending the session runs
+**stop: h3 studio**.
+
+`.vscode/tasks.json` holds that task and five more: **run: h3 studio** and
+**stop: h3 studio** for a run without the debugger, plus **build: h3studio
+(dist)**, **test: go (race)** and **test: canvas.js (node)**. The checkpoint
+each run uses is `H3_MODEL` in that file — edit it there.
 
 ## Features
 
@@ -389,9 +430,12 @@ since renders only ever read references from there — takes themselves live in
 `outputs/` and are never read back directly.
 
 **Timeline.** Combine multiple takes from a session into a single output
-video from the Timeline panel — pick clips, order them, and export. Below,
-two FL2VA takes from the same session are combined with the Timeline feature
-into one continuous shot:
+video from the Timeline panel — pick clips, order them, and export. **Create
+Timeline** opens helmstudio's sequence editor instead (see
+[What helmstudio adds](#what-helmstudio-adds)), and this one is what that button
+falls back to when helmstudio's components cannot be loaded; the panel lists
+what it made either way. Below, two FL2VA takes from the same session are
+combined with it into one continuous shot:
 
 <table>
 <tr>
@@ -461,10 +505,11 @@ dialogs · Space play/pause · ←/→ step one frame · J/K next/previous take.
 
 ## Sessions and state
 
-A session is just a directory: `sessions/<name>/`, holding everything for one
-line of work — its inputs, its rendered outputs, and the exact UI state that
-produced them. Nothing is copied or duplicated between sessions, so switching
-sessions is instant and each one's disk footprint is only what you put in it.
+A session is just a directory: `sessions/<name>/`, inside the data directory
+helmstudio gives the studio as `--root`. It holds everything for one line of
+work — its inputs, its rendered outputs, and the exact UI state that produced
+them. Nothing is copied or duplicated between sessions, so switching sessions
+is instant and each one's disk footprint is only what you put in it.
 
 ```
 sessions/<name>/
@@ -479,12 +524,19 @@ sessions/<name>/
 
 `.thumbs/` folders next to videos hold cached poster images.
 
-**Under helmstudio**, this layout does not change: a take is written to
-`outputs/` as it always was, and helmstudio adopts it by hardlink. The same
-bytes appear in its library under a second name, at the same inode, counted
-once — so the footprint above is still the whole of it. Sessions stay h3
-studio's own directories; only what a take *becomes* — an asset, a gallery
-item, a clip on a sequence — is helmstudio's.
+A finished take becomes helmstudio's too, and that changes nothing about the
+layout above. It is written to `outputs/` as it always was, and helmstudio
+adopts it by hardlink: the same bytes appear in its library under a second
+name, at the same inode, counted once, so the footprint above is still the
+whole of it. The gallery item carries the sidecar's parameters plus the session
+name as `h3_session`, because helmstudio checks session ids against its own
+sessions and h3 studio's directories are not those. The directories stay h3
+studio's own; only what a take *becomes* — an asset, a gallery item, a clip on
+a sequence — is helmstudio's.
+
+Deleting a take here does not undo the adoption: h3 studio removes its own
+files, but helmstudio's hardlink keeps the bytes and its gallery item stays, so
+a take you want gone entirely has to go there too.
 
 **State** — `setting.json` is written atomically on a debounced auto-save
 while you edit the form, so a session reopens exactly where you left
@@ -537,6 +589,12 @@ must: other websites and other machines driving it.
 - Only `H3_*` environment variables reach h3, **Extra arguments** only accepts
   `--use-*` switches and `--ref-image-size`, and render inputs must be plain
   file names inside the session's `inputs/`.
+- Everything the page uses of helmstudio's — helm-css, the theme stream, this
+  studio's hue, the gallery, the render log — comes through the same-origin
+  `/helm/` proxy the server mounts, so the browser never holds helmstudio's
+  token. The proxy forwards the studio API and the theme stream and nothing
+  else — a launcher path (install, launch, stop) is 404 and never reaches the
+  daemon.
 
 ## Limits
 
@@ -547,14 +605,21 @@ must: other websites and other machines driving it.
   audio references.
 - Extra arguments in Interactive mode apply when h3.c is loaded, not per
   render.
+- Recording with helmstudio happens as a take finishes, and nothing is
+  reconciled afterwards: a take deleted here stays in helmstudio's gallery.
+  Combined timeline videos and preview PNGs are h3 studio's own and are not
+  adopted at all.
+- `/api/queue` does not answer helmstudio's busy contract yet, so its
+  switch-studio dialog reads h3 studio as unknown rather than busy or idle.
 
 ## Contributing
 
 Contributions are welcome — bug reports, feature requests, and pull requests
 alike. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; it
-covers what you need running locally, coding conventions (stdlib-only Go, no
-frontend build step), the test commands, and how issues involving the `h3.c` engine itself
-should be routed to [its own repository](https://github.com/janishar/h3.c).
+covers what you need running locally, coding conventions (no Go dependencies
+beyond helmstudio's runtime SDK, no frontend build step), the test commands, and
+how issues involving the `h3.c` engine itself should be routed to
+[its own repository](https://github.com/janishar/h3.c).
 
 ## License
 

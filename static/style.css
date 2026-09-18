@@ -39,6 +39,9 @@ code { font: 400 11px var(--helm-font-mono); color: var(--helm-text-secondary); 
 .barright { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .pathbutton { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 11px; background: color-mix(in srgb, var(--helm-text-primary) 4%, transparent); color: var(--helm-text-secondary); }
 .pathbutton.icon { padding: 4px 8px; filter: grayscale(1); opacity: .6; }
+/* display: inline-flex above outranks the UA's [hidden], and the Gallery button
+   is hidden until helmstudio's components load (static/helmstudio.js). */
+.pathbutton[hidden] { display: none; }
 .pathbutton.icon.on { filter: none; opacity: 1; border-color: var(--helm-studio-accent); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--helm-border-strong); display: inline-block; }
 .dot.ok { background: var(--helm-status-running); }
@@ -509,7 +512,7 @@ body.resizing { cursor: ns-resize; user-select: none; }
 
 /* Hosted, the launcher's theme wins: the runtime SDK's theme bridge marks the
    root while it follows the launcher, and our own switch steps aside
-   (helmstudio docs/decisions.md M6 Q19). Standalone it is there as before. */
+   (helmstudio docs/decisions.md M6 Q19). Unmarked, the switch is there. */
 :root[data-helm-theme-follows] .themeswitch { display: none; }
 
 /* ── helmstudio's components ──────────────────────────────────────────────

@@ -7,8 +7,8 @@
  *
  * Everything here comes through the /helm/ proxy the server mounts, so the
  * page holds no token and nothing of helmstudio's is copied into this
- * repository. Standalone there is no /helm/: the imports fail, the Gallery
- * button stays hidden, and the rest of the page is untouched.
+ * repository. If /helm/ cannot answer, the imports fail, the Gallery button
+ * stays hidden, and the rest of the page is untouched.
  *
  * The component is given no URL and builds none. It reads a client, which is
  * window.helm here — helm-ui's own rule, and why one page sets it once.
@@ -19,9 +19,10 @@ const HELM_SDK = "/helm/sdk/v1";
 /**
  * Point the Render log tab at the render that is running.
  *
- * app.js calls this on every queue update. Standalone it is this no-op and
- * stays one: there is no job log to follow, so the tab never appears and the
- * page behaves as it always did. connectHelmstudio replaces it.
+ * app.js calls this on every queue update. With no helmstudio reachable it is
+ * this no-op and stays one: there is no job log to follow, so the tab never
+ * appears and the page behaves as it always did. connectHelmstudio replaces
+ * it.
  */
 let showHelmRenderLog = () => {};
 
@@ -116,11 +117,10 @@ const SEQUENCE_RATES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60];
 /**
  * The timeline: helmstudio's sequence document, edited in helm-timeline.
  *
- * h3 studio's own Create Timeline concatenates files and is what a studio
- * running on its own still gets. This is the other thing — a sequence
- * helmstudio keeps, that can hold clips from any studio, trimmed and
- * dissolved and exported as a job it can cancel — so under helmstudio the
- * button opens this instead.
+ * h3 studio's own Create Timeline concatenates files, and is what the button
+ * falls back to when these components cannot load. This is the other thing — a
+ * sequence helmstudio keeps, that can hold clips from any studio, trimmed and
+ * dissolved and exported as a job it can cancel — so the button opens this.
  */
 function timelineDialog(picker) {
   const title = el("h2", { class: "helmstudio-title", text: "Timeline" });
@@ -222,9 +222,9 @@ function timelineDialog(picker) {
 /**
  * Connect to helmstudio, if this studio is running under it.
  *
- * Failure is the standalone case and not an error: `helm dev` and the app
- * serve /helm/, a bare `h3studio` does not, and the page must be the same
- * page either way. So this reports whether it connected and says nothing.
+ * Failure is not an error: the server mounts /helm/ but the daemon behind it
+ * can be down or still starting, and the page must be the same page either
+ * way. So this reports whether it connected and says nothing.
  */
 async function connectHelmstudio() {
   let connect;
@@ -232,7 +232,7 @@ async function connectHelmstudio() {
     ({ connect } = await import(`${HELM_SDK}/helm-runtime.js`));
     await import(`${HELM_SDK}/helm-ui.js`);
   } catch {
-    return false; // standalone: no proxy, no components, no Gallery button
+    return false; // nothing behind the proxy: no components, no Gallery button
   }
   // helm-ui components read window.helm when they are given no client of
   // their own, which is how one page serves every component it mounts.
@@ -248,9 +248,9 @@ async function connectHelmstudio() {
   mountRenderLog();
 
   // Create Timeline opens helmstudio's sequence rather than h3 studio's own
-  // combine-videos editor, which stays exactly as it is for a studio running
-  // on its own. timeline.js sets this handler; under helmstudio there is a
-  // better one, so it is taken over rather than added beside.
+  // combine-videos editor, which stays exactly as it is and is what the button
+  // keeps when this never runs. timeline.js sets that handler; there is a
+  // better one here, so it is taken over rather than added beside.
   const timeline = timelineDialog(gallery);
   const timelineButton = $("timelineButton");
   if (timelineButton) timelineButton.onclick = () => timeline.open();

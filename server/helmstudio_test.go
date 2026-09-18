@@ -9,7 +9,7 @@ import (
 	helm "github.com/janishar/helmstudio/packages/helm-runtime-sdk/go"
 )
 
-// A studio running on its own has no platform, and nothing in the render path
+// A Config built without a platform has none, and nothing in the render path
 // may care. If this ever panics, a take that rendered fine is lost to it.
 func TestANilPlatformRecordsNothingAndDoesNotPanic(t *testing.T) {
 	var p *Platform
@@ -95,8 +95,8 @@ func TestItemParamsCopiesTheSidecarRatherThanWritingToIt(t *testing.T) {
 	}
 }
 
-// The runner calls these on every render. Standalone there is no task, and a
-// nil one must cost nothing and panic never — a render that worked being lost
+// The runner calls these on every render. A render helmstudio opened no job
+// for has none, and a nil one must cost nothing and panic never — a render that worked being lost
 // to a nil dereference is the failure this whole design avoids.
 func TestANilTaskIsANoOp(t *testing.T) {
 	var task *Task

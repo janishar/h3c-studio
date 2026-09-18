@@ -24,6 +24,10 @@ type Options struct {
 	AllowShell   bool
 	AllowedHosts []string // extra Host header names accepted besides IP literals and localhost
 	Static       fs.FS
+	// Platform is helmstudio, resolved once by main before anything is
+	// created. A nil one is the case tests run in, where every call on it is
+	// a no-op; the binary itself will not start without one.
+	Platform *Platform
 }
 
 type Config struct {
@@ -43,9 +47,8 @@ type Config struct {
 	FFmpeg  string
 	FFprobe string
 
-	// Platform is helmstudio when the studio runs under it, and nil when it
-	// runs on its own. Resolved once: the environment it reads is fixed for
-	// the life of the process.
+	// Platform is helmstudio, the one main resolved from the environment it
+	// was launched with. Nil only in tests, where every call on it is a no-op.
 	Platform *Platform
 
 	sessionLocks keyedMutex
@@ -76,7 +79,7 @@ func NewConfig(opts Options) (*Config, error) {
 		model:        model,
 		Root:         root,
 		Sessions:     sessions,
-		Platform:     NewPlatform(),
+		Platform:     opts.Platform,
 		Host:         opts.Host,
 		Port:         opts.Port,
 		Dev:          opts.Dev,

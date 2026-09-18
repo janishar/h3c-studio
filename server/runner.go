@@ -52,8 +52,8 @@ type Job struct {
 	Progress       []int
 	Command        []string
 	CommandDisplay string
-	// task is this render reported to helmstudio, or nil when the studio runs
-	// on its own. Every method on it is a no-op when it is nil.
+	// task is this render reported to helmstudio, or nil when it would not open
+	// a job for it. Every method on it is a no-op when it is nil.
 	task          *Task
 	Output        string
 	Error         string
@@ -557,8 +557,8 @@ func (r *Runner) finishTake(job *Job, produced string) {
 	}
 	_ = writeJSONAtomic(sidecarFor(final, false), meta)
 
-	// The take is on disk and recorded here; helmstudio, if this studio runs
-	// under it, gets it too. A no-op standalone, and never fatal either way.
+	// The take is on disk and recorded here; helmstudio gets it too. A no-op
+	// without a platform, and never fatal either way.
 	r.cfg.Platform.RecordTake(final, job.Label, job.Session, probe, meta)
 }
 

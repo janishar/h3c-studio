@@ -30,12 +30,29 @@ func main() {
 	dev := flag.Bool("dev", false, "serve static/ from disk without caching, for front-end work")
 	allowShell := flag.Bool("allow-shell", false, "enable the shell terminal and changing the h3 binary from the browser")
 	allowHosts := flag.String("allow-host", "", "comma-separated extra Host names to accept (IP addresses and localhost are always accepted)")
-	root := flag.String("root", "", "directory holding sessions/ (default: next to the binary, or the current directory)")
+	root := flag.String("root", "", "directory holding sessions/ (helmstudio passes its data directory here)")
 	flag.Parse()
 
-	rootDir := *root
+	// h3 studio runs under helmstudio and nowhere else. Both of the things it
+	// needs come from whatever launched it — the platform to record takes with,
+	// and the directory to keep sessions in — and it makes up neither, so a
+	// studio started by hand stops here instead of writing into a checkout.
+	platform := server.NewPlatform()
+	if !platform.Available() {
+		if api := server.HelmAPI(); api != "" {
+			fmt.Fprintf(os.Stderr, "h3 studio runs under helmstudio, and %s could not be used — the reason is logged above.\n", api)
+		} else {
+			fmt.Fprintln(os.Stderr, "h3 studio runs under helmstudio. HELM_API is not set, so there is no platform to run under.")
+			fmt.Fprintln(os.Stderr, "  installed:  start it from helmstudio's Studios list")
+			fmt.Fprintln(os.Stderr, "  a checkout: bash scripts/run.sh")
+		}
+		os.Exit(2)
+	}
+	rootDir := strings.TrimSpace(*root)
 	if rootDir == "" {
-		rootDir = discoverRoot()
+		fmt.Fprintln(os.Stderr, "h3 studio keeps its sessions in the directory helmstudio gives it and creates none of its own.")
+		fmt.Fprintln(os.Stderr, "  --root is missing: helmstudio.yaml passes it as {data}.")
+		os.Exit(2)
 	}
 	h3Path := firstNonEmpty(*h3, os.Getenv("H3STUDIO_H3"), server.SavedPath(rootDir, "h3.json", "h3"))
 	modelPath := firstNonEmpty(*model, os.Getenv("H3STUDIO_MODEL"), server.SavedPath(rootDir, "model.json", "model"))
@@ -45,7 +62,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	static, err := staticFS(rootDir, *dev)
+	static, err := staticFS(*dev)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -53,6 +70,7 @@ func main() {
 	cfg, err := server.NewConfig(server.Options{
 		H3: h3Path, Model: modelPath, Root: rootDir, Host: *host, Port: *port,
 		Dev: *dev, AllowShell: *allowShell, AllowedHosts: strings.Split(*allowHosts, ","), Static: static,
+		Platform: platform,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -82,6 +100,7 @@ func main() {
 	fmt.Printf("  binary    %s\n", cfg.H3())
 	fmt.Printf("  model     %s\n", cfg.Model())
 	fmt.Printf("  sessions  %s\n", cfg.Sessions)
+	fmt.Printf("  helm      %s\n", server.HelmAPI())
 	if *dev {
 		fmt.Println("  static    served from disk (dev)")
 	}
@@ -115,39 +134,36 @@ func main() {
 	runner.Shutdown()
 }
 
-// discoverRoot finds the directory that holds sessions/: next to the binary,
-// its parent (dist/h3studio), or the current directory.
-func discoverRoot() string {
-	candidates := []string{}
-	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
-		candidates = append(candidates, dir, filepath.Dir(dir))
+// staticFS serves the embedded UI, or static/ from disk in dev mode.
+//
+// --root is helmstudio's data directory and holds no source, so --dev looks for
+// the checkout instead: where the studio was launched from, then beside the
+// binary and one level up, which is dist/h3studio.
+func staticFS(dev bool) (fs.FS, error) {
+	if !dev {
+		return fs.Sub(embeddedStatic, "static")
 	}
-	cwd, err := os.Getwd()
-	if err == nil {
-		candidates = append(candidates, cwd)
-	}
-	for _, dir := range candidates {
-		if server.DirExists(filepath.Join(dir, "sessions")) || server.FileExists(filepath.Join(dir, "go.mod")) {
-			return dir
+	tried := []string{}
+	for _, dir := range devStaticDirs() {
+		if server.FileExists(filepath.Join(dir, "index.html")) {
+			return os.DirFS(dir), nil
 		}
+		tried = append(tried, dir)
 	}
-	if cwd != "" {
-		return cwd
-	}
-	return "."
+	return nil, fmt.Errorf("--dev found no static/index.html in %s", strings.Join(tried, ", "))
 }
 
-// staticFS serves the embedded UI, or static/ from disk in dev mode.
-func staticFS(root string, dev bool) (fs.FS, error) {
-	if dev {
-		dir := filepath.Join(root, "static")
-		if !server.FileExists(filepath.Join(dir, "index.html")) {
-			return nil, fmt.Errorf("--dev needs %s/index.html", dir)
-		}
-		return os.DirFS(dir), nil
+// devStaticDirs are the static/ directories --dev will serve, in order.
+func devStaticDirs() []string {
+	dirs := []string{}
+	if cwd, err := os.Getwd(); err == nil {
+		dirs = append(dirs, filepath.Join(cwd, "static"))
 	}
-	return fs.Sub(embeddedStatic, "static")
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		dirs = append(dirs, filepath.Join(dir, "static"), filepath.Join(filepath.Dir(dir), "static"))
+	}
+	return dirs
 }
 
 func firstNonEmpty(values ...string) string {

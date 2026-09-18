@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -17,25 +18,27 @@ import (
 // in the gallery every studio shares and can be pulled into a timeline. The
 // file is adopted by hardlink, not copied — the same bytes, counted once.
 //
-// Standalone there is no platform: HELM_API is unset, every method here is a
-// no-op on a nil Platform, and h3 studio behaves exactly as it did before.
-// Nothing in the render path depends on any of it succeeding.
+// There is always one: main resolves the platform before anything else and
+// refuses to start the studio without it. The nil receivers below are written
+// anyway — a platform that refuses one call must not take a render down with
+// it, and the tests build a Config with no platform at all. Nothing in the
+// render path depends on any of this succeeding.
 
-// Platform is helmstudio, when h3 studio is running under it or under
-// `helm dev`. It is nil when the studio runs on its own.
+// Platform is helmstudio: the daemon that launched this studio, or the one
+// behind `helm dev`. It is nil only in tests.
 type Platform struct {
 	client *helm.Client
 }
 
 // NewPlatform returns helmstudio if this process is running under it, and nil
-// if it is not. A studio that cannot reach the platform is not a broken
-// studio, so the only thing an error earns is a line in the log.
+// if it is not. The reason is logged here; what a missing platform means is
+// main's to decide, and main will not start without one.
 func NewPlatform() *Platform {
 	client, err := helm.FromEnv()
 	if err != nil {
 		if !errors.Is(err, helm.ErrNoProvider) {
-			// HELM_API set but unusable — worth saying, because under
-			// helmstudio this means takes will not reach the gallery.
+			// HELM_API set but unusable: said here because the SDK knows
+			// which part of it was wrong, and main only knows there is none.
 			log.Printf("helmstudio: not recording takes: %v", err)
 		}
 		return nil
@@ -45,6 +48,12 @@ func NewPlatform() *Platform {
 
 // Available reports whether takes are being recorded with helmstudio.
 func (p *Platform) Available() bool { return p != nil && p.client != nil }
+
+// HelmAPI is the platform this process was launched with, or "" when it was
+// launched with none. main reads it to tell the two ways there can be no
+// platform apart: nothing launched this under helmstudio, or something did and
+// the SDK could not use what it was given.
+func HelmAPI() string { return os.Getenv(helm.EnvAPI) }
 
 // RecordTake adopts a finished take and records it in the gallery, with the
 // parameters it was made from. One call per take, which is what the gallery's
@@ -126,8 +135,8 @@ func itemParams(session string, params map[string]any) map[string]any {
 // and helm-terminal has a log to stream. Nothing here can fail a render — a
 // platform that refuses gets a line in the log and the render carries on.
 //
-// A nil *Task is the standalone case and every method is a no-op on it, so
-// the runner never asks whether there is a platform.
+// A nil *Task is a render helmstudio would not open a job for, and every
+// method is a no-op on it, so the runner never asks whether there is one.
 type Task struct {
 	client *helm.Client
 	id     string
