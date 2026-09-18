@@ -466,6 +466,13 @@ sessions/<name>/
 
 `.thumbs/` folders next to videos hold cached poster images.
 
+**Under helmstudio**, this layout does not change: a take is written to
+`outputs/` as it always was, and helmstudio adopts it by hardlink. The same
+bytes appear in its library under a second name, at the same inode, counted
+once — so the footprint above is still the whole of it. Sessions stay h3
+studio's own directories; only what a take *becomes* — an asset, a gallery
+item, a clip on a sequence — is helmstudio's.
+
 **State** — `setting.json` is written atomically on a debounced auto-save
 while you edit the form, so a session reopens exactly where you left
 it: prompt text, canvas size, quality settings, every reference and anchor,
