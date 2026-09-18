@@ -132,10 +132,12 @@ type Task struct {
 	client *helm.Client
 	id     string
 
-	mu      sync.Mutex
-	pending []string
-	closed  bool
-	flushed chan struct{}
+	mu       sync.Mutex
+	pending  []string
+	progress []int // num, den; the latest, not every one
+	closed   bool
+	flushed  chan struct{}
+	done     chan struct{}
 }
 
 // logFlush is how often buffered lines are sent. A render writes thousands of
@@ -162,7 +164,7 @@ func (p *Platform) StartTask(label string) *Task {
 		log.Printf("helmstudio: not reporting this render: %v", err)
 		return nil
 	}
-	t := &Task{client: p.client, id: job.ID, flushed: make(chan struct{})}
+	t := &Task{client: p.client, id: job.ID, flushed: make(chan struct{}), done: make(chan struct{})}
 	go t.pump()
 	return t
 }
@@ -184,8 +186,11 @@ func (t *Task) Log(line string) {
 	}
 }
 
-// pump sends buffered lines until the task is finished.
+// pump is the only goroutine that talks to helmstudio about this job, so no
+// call the render makes can wait on the network. It ends after one last flush,
+// and closing done is what tells Finish the log is complete.
 func (t *Task) pump() {
+	defer close(t.done)
 	tick := time.NewTicker(logFlush)
 	defer tick.Stop()
 	for {
@@ -199,28 +204,39 @@ func (t *Task) pump() {
 	}
 }
 
+// flush sends whatever has accumulated: the lines, and the latest progress.
 func (t *Task) flush() {
 	t.mu.Lock()
-	lines := t.pending
-	t.pending = nil
+	lines, progress := t.pending, t.progress
+	t.pending, t.progress = nil, nil
 	t.mu.Unlock()
-	if len(lines) == 0 {
-		return
+
+	if len(lines) > 0 && t.client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		if err := t.client.Jobs.AppendLog(ctx, t.id, helm.LogAppend{Lines: lines}); err != nil {
+			log.Printf("helmstudio: %d log lines not delivered: %v", len(lines), err)
+		}
+		cancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := t.client.Jobs.AppendLog(ctx, t.id, helm.LogAppend{Lines: lines}); err != nil {
-		log.Printf("helmstudio: %d log lines not delivered: %v", len(lines), err)
+	if len(progress) == 2 {
+		t.patch(map[string]any{"progress_num": progress[0], "progress_den": progress[1]})
 	}
 }
 
-// Progress reports how far along the render is. The caller throttles: this is
-// called where h3 studio already decided to tell its own page.
+// Progress records how far along the render is. It does not send: the render
+// goroutine calls this, and nothing on the render path may wait on the
+// network. The pump sends the latest value on its next tick, so a render that
+// reports a hundred times between ticks costs one request, not a hundred.
 func (t *Task) Progress(num, den int) {
 	if t == nil || den <= 0 {
 		return
 	}
-	t.patch(map[string]any{"progress_num": num, "progress_den": den})
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return
+	}
+	t.progress = []int{num, den}
 }
 
 // Finish closes the job in the state h3 studio's own job ended in. Anything
@@ -237,7 +253,13 @@ func (t *Task) Finish(state, message string) {
 	if already {
 		return
 	}
+	// The last lines go before the job is closed, not beside it: a log append
+	// to a job helmstudio already considers finished is a 409, and the end of
+	// a render is exactly the part someone reads.
 	close(t.flushed)
+	if t.done != nil {
+		<-t.done // a Task with no pump has nothing to wait for
+	}
 
 	body := map[string]any{"state": taskStateFor(state)}
 	if body["state"] == string(helm.JobStateFailed) && message != "" {
@@ -260,6 +282,9 @@ func taskStateFor(state string) string {
 }
 
 func (t *Task) patch(body map[string]any) {
+	if t == nil || t.client == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if _, err := t.client.Jobs.Update(ctx, t.id, body); err != nil {

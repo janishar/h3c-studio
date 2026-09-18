@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	helm "github.com/janishar/helmstudio/packages/helm-runtime-sdk/go"
 )
@@ -164,5 +165,49 @@ func TestLoggingWhileFinishingDoesNotRaceOrBlock(t *testing.T) {
 	task.mu.Unlock()
 	if after != held {
 		t.Errorf("a line was buffered after the task closed: %d then %d", held, after)
+	}
+}
+
+// Finish waits for the pump's last flush so the end of a render is not lost
+// to a 409 on a job helmstudio already closed. A Task with no pump has
+// nothing to wait for, and must not wait forever on a nil channel.
+func TestFinishDoesNotHangWithoutAPump(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		task := &Task{flushed: make(chan struct{})} // no client, no pump, no done
+		task.Finish("done", "")
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Finish blocked on a Task that has no pump")
+	}
+}
+
+// Progress must never reach the network from the render's goroutine: it
+// records the latest and the pump sends it. A hundred updates between ticks
+// are one request, and the last one wins.
+func TestProgressIsRecordedNotSent(t *testing.T) {
+	task := &Task{flushed: make(chan struct{})}
+	for i := 1; i <= 50; i++ {
+		task.Progress(i, 50)
+	}
+	task.mu.Lock()
+	got := task.progress
+	task.mu.Unlock()
+	if len(got) != 2 || got[0] != 50 || got[1] != 50 {
+		t.Errorf("progress is %v, want the latest 50/50", got)
+	}
+
+	task.mu.Lock()
+	task.closed = true
+	task.mu.Unlock()
+	task.Progress(7, 50)
+	task.mu.Lock()
+	after := task.progress
+	task.mu.Unlock()
+	if after[0] != 50 {
+		t.Errorf("progress moved to %v after the task closed", after)
 	}
 }
