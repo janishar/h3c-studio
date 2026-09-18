@@ -52,17 +52,20 @@ type Job struct {
 	Progress       []int
 	Command        []string
 	CommandDisplay string
-	Output         string
-	Error          string
-	Hint           string
-	Started        float64
-	Finished       float64
-	Profile        []ProfileRow
-	PreviewDir     string
-	PreviewCount   int
-	PreviewLatest  *PreviewInfo
-	EstimateS      float64
-	EtaS           float64
+	// task is this render reported to helmstudio, or nil when the studio runs
+	// on its own. Every method on it is a no-op when it is nil.
+	task          *Task
+	Output        string
+	Error         string
+	Hint          string
+	Started       float64
+	Finished      float64
+	Profile       []ProfileRow
+	PreviewDir    string
+	PreviewCount  int
+	PreviewLatest *PreviewInfo
+	EstimateS     float64
+	EtaS          float64
 
 	tail            []string
 	cancelRequested bool
@@ -341,6 +344,11 @@ func (r *Runner) loop() {
 }
 
 func (r *Runner) execute(job *Job) {
+	// Reported to helmstudio for as long as it runs. Created outside job.set:
+	// it talks to the platform, and no lock of h3 studio's is held for that.
+	if task := r.cfg.Platform.StartTask(job.Label); task != nil {
+		job.set(func(j *Job) { j.task = task })
+	}
 	defer func() {
 		if rec := recover(); rec != nil {
 			job.set(func(j *Job) { j.State = "failed"; j.Error = fmt.Sprint(rec) })
@@ -357,6 +365,8 @@ func (r *Runner) execute(job *Job) {
 		}
 		r.jobLog(job, fmt.Sprintf("[studio] %s: %s in %s", firstNonEmpty(summary.Label, "take"), summary.State,
 			formatSeconds(summary.Finished-summary.Started)))
+		// After the last line, so helmstudio's log ends where this one does.
+		job.task.Finish(summary.State, summary.Error)
 		if summary.State == "failed" && summary.Error != "" {
 			r.jobLog(job, "!! "+summary.Error)
 		}
@@ -586,6 +596,7 @@ func (r *Runner) jobEmit(job *Job, line string, overwrite bool) {
 		job.mu.Unlock()
 		if emit {
 			r.events.Emit("progress", payload)
+			job.task.Progress(n, total)
 		}
 	}
 	r.events.Emit("log", map[string]any{"session": job.Session, "line": line, "replace": overwrite})
@@ -621,6 +632,7 @@ func (r *Runner) jobCommit(job *Job, line string) {
 
 // jobLog writes a studio-generated line to the log and the UI.
 func (r *Runner) jobLog(job *Job, line string) {
+	job.task.Log(line)
 	r.logs.Write(job.Session, line)
 	r.events.Emit("log", map[string]any{"session": job.Session, "line": line, "replace": false})
 }

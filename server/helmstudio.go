@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sync"
 	"time"
 
 	helm "github.com/janishar/helmstudio/packages/helm-runtime-sdk/go"
@@ -113,4 +114,162 @@ func itemParams(session string, params map[string]any) map[string]any {
 		item["h3_session"] = session
 	}
 	return item
+}
+
+// ---------------------------------------------------------------- task jobs
+
+// A render, mirrored to helmstudio as a task job.
+//
+// h3 studio's own runner is unchanged and stays in charge: it queues, runs,
+// reports and cancels exactly as it did. This reports the same render to
+// helmstudio in parallel, so the launcher can show what this studio is doing
+// and helm-terminal has a log to stream. Nothing here can fail a render — a
+// platform that refuses gets a line in the log and the render carries on.
+//
+// A nil *Task is the standalone case and every method is a no-op on it, so
+// the runner never asks whether there is a platform.
+type Task struct {
+	client *helm.Client
+	id     string
+
+	mu      sync.Mutex
+	pending []string
+	closed  bool
+	flushed chan struct{}
+}
+
+// logFlush is how often buffered lines are sent. A render writes thousands of
+// them and one request per line would be a request per frame; this trades a
+// little latency for a request every half second.
+const logFlush = 500 * time.Millisecond
+
+// maxPendingLines bounds what a flush can owe, so a studio that floods its
+// output cannot grow this without limit. The oldest go: helm-terminal is for
+// watching a render, and the studio's own log keeps everything.
+const maxPendingLines = 2000
+
+// StartTask reports a render to helmstudio and returns the job to report it
+// on, or nil when there is no platform or it refused.
+func (p *Platform) StartTask(label string) *Task {
+	if !p.Available() {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	state := string(helm.JobStateRunning)
+	job, err := p.client.Jobs.Create(ctx, helm.TaskCreate{State: &state})
+	if err != nil {
+		log.Printf("helmstudio: not reporting this render: %v", err)
+		return nil
+	}
+	t := &Task{client: p.client, id: job.ID, flushed: make(chan struct{})}
+	go t.pump()
+	return t
+}
+
+// Log buffers one line for helmstudio. It never blocks the render and never
+// writes from the caller's goroutine.
+func (t *Task) Log(line string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return
+	}
+	t.pending = append(t.pending, line)
+	if over := len(t.pending) - maxPendingLines; over > 0 {
+		t.pending = t.pending[over:]
+	}
+}
+
+// pump sends buffered lines until the task is finished.
+func (t *Task) pump() {
+	tick := time.NewTicker(logFlush)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			t.flush()
+		case <-t.flushed:
+			t.flush()
+			return
+		}
+	}
+}
+
+func (t *Task) flush() {
+	t.mu.Lock()
+	lines := t.pending
+	t.pending = nil
+	t.mu.Unlock()
+	if len(lines) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := t.client.Jobs.AppendLog(ctx, t.id, helm.LogAppend{Lines: lines}); err != nil {
+		log.Printf("helmstudio: %d log lines not delivered: %v", len(lines), err)
+	}
+}
+
+// Progress reports how far along the render is. The caller throttles: this is
+// called where h3 studio already decided to tell its own page.
+func (t *Task) Progress(num, den int) {
+	if t == nil || den <= 0 {
+		return
+	}
+	t.patch(map[string]any{"progress_num": num, "progress_den": den})
+}
+
+// Finish closes the job in the state h3 studio's own job ended in. Anything
+// that is not done or cancelled is a failure, because a job left running is
+// one the launcher would wait on forever.
+func (t *Task) Finish(state, message string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	already := t.closed
+	t.closed = true
+	t.mu.Unlock()
+	if already {
+		return
+	}
+	close(t.flushed)
+
+	body := map[string]any{"state": taskStateFor(state)}
+	if body["state"] == string(helm.JobStateFailed) && message != "" {
+		body["last_error"] = map[string]any{"code": "render_failed", "message": truncate(message, 4000)}
+	}
+	t.patch(body)
+}
+
+// taskStateFor maps h3 studio's own job states onto the four a task job may
+// be set to. "done" is what h3 studio calls a finished render.
+func taskStateFor(state string) string {
+	switch state {
+	case "done":
+		return string(helm.JobStateSucceeded)
+	case "cancelled":
+		return string(helm.JobStateCancelled)
+	default:
+		return string(helm.JobStateFailed)
+	}
+}
+
+func (t *Task) patch(body map[string]any) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := t.client.Jobs.Update(ctx, t.id, body); err != nil {
+		log.Printf("helmstudio: job %s not updated: %v", t.id, err)
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

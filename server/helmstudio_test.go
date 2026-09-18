@@ -1,6 +1,8 @@
 package server
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	helm "github.com/janishar/helmstudio/packages/helm-runtime-sdk/go"
@@ -89,5 +91,78 @@ func TestItemParamsCopiesTheSidecarRatherThanWritingToIt(t *testing.T) {
 	none["seed"] = 7
 	if sidecar["seed"] != 42 {
 		t.Error("the returned params alias the sidecar")
+	}
+}
+
+// The runner calls these on every render. Standalone there is no task, and a
+// nil one must cost nothing and panic never — a render that worked being lost
+// to a nil dereference is the failure this whole design avoids.
+func TestANilTaskIsANoOp(t *testing.T) {
+	var task *Task
+	task.Log("a line")
+	task.Progress(3, 10)
+	task.Finish("done", "")
+	task.Finish("done", "") // finishing twice is what a panicking render does
+
+	var p *Platform
+	if got := p.StartTask("take"); got != nil {
+		t.Errorf("a nil Platform started a task: %v", got)
+	}
+	if got := (&Platform{}).StartTask("take"); got != nil {
+		t.Errorf("a Platform with no client started a task: %v", got)
+	}
+}
+
+// h3 studio's own states are not helmstudio's. A render that finished is
+// "done" here and "succeeded" there, and anything unrecognised must end the
+// job rather than leave the launcher waiting on it forever.
+func TestTaskStateMapping(t *testing.T) {
+	for state, want := range map[string]string{
+		"done":      "succeeded",
+		"cancelled": "cancelled",
+		"failed":    "failed",
+		"running":   "failed",
+		"":          "failed",
+	} {
+		if got := taskStateFor(state); got != want {
+			t.Errorf("taskStateFor(%q) = %q, want %q", state, got, want)
+		}
+	}
+}
+
+// A render writes thousands of lines from the goroutine reading h3's output
+// while the job finishes on another. Nothing may race, and nothing may block.
+func TestLoggingWhileFinishingDoesNotRaceOrBlock(t *testing.T) {
+	task := &Task{flushed: make(chan struct{})} // no client: flush is never reached
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 500; j++ {
+				task.Log(fmt.Sprintf("line %d-%d", n, j))
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	task.mu.Lock()
+	held := len(task.pending)
+	task.mu.Unlock()
+	if held > maxPendingLines {
+		t.Errorf("buffered %d lines, which is past the %d cap", held, maxPendingLines)
+	}
+
+	// Closing marks it closed; later lines are dropped rather than queued for
+	// a flush that will never come.
+	task.mu.Lock()
+	task.closed = true
+	task.mu.Unlock()
+	task.Log("after the end")
+	task.mu.Lock()
+	after := len(task.pending)
+	task.mu.Unlock()
+	if after != held {
+		t.Errorf("a line was buffered after the task closed: %d then %d", held, after)
 	}
 }

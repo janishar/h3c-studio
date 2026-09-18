@@ -22,12 +22,13 @@ runtime:
   backends: [metal]
   precision: [bf16, int8]
   language: c
-# What h3 studio actually uses, and no more (criterion 9): a finished take is
-# adopted as an asset and recorded as one gallery item, so what this studio
-# made is in the gallery every studio shares. Nothing else yet — sessions stay
-# its own directories, so kv, records and timeline are not requested and the
-# gallery item carries no session_id.
-capabilities: [assets, gallery, timeline]
+# What h3 studio actually uses, and no more (criterion 9). A finished take is
+# adopted as an asset and recorded as one gallery item; sequences are
+# helmstudio's timeline; and a render is reported as a task job with its
+# progress and its log, so the launcher can see what this studio is doing.
+# Sessions stay h3 studio's own directories, so kv and records are not
+# requested and a gallery item carries no session_id.
+capabilities: [assets, gallery, timeline, jobs]
 # The page loads helm-ui for the shared gallery; it still draws its own takes
 # rail, viewer and timeline, so this pins what it loads and nothing else.
 sdk: { runtime: "^1", ui: "^1", css: "^1" }
