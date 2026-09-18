@@ -1124,6 +1124,9 @@ async function init() {
   if (!cfg.ffmpeg || !cfg.ffprobe) {
     toast("ffmpeg/ffprobe not found — thumbnails, frame extraction and the timeline won't work.", { kind: "error", hint: "Install with `brew install ffmpeg`, or set H3_FFMPEG / H3_FFPROBE." });
   }
+  // Under helmstudio this mounts the shared gallery; standalone it is a
+  // no-op and the Gallery button stays hidden. Either way the page goes on.
+  connectHelmstudio().catch(() => {});
   if (!cfg.model_info.has_fl2va || !cfg.model_info.h3_runs) openModelModal(false);
   await activateSession(cfg.session);
 }

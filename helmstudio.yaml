@@ -28,9 +28,9 @@ runtime:
 # its own directories, so kv, records and timeline are not requested and the
 # gallery item carries no session_id.
 capabilities: [assets, gallery]
-# No `ui` major: the page draws its own gallery, timeline and terminal and
-# imports no component, so it pins only what it loads.
-sdk: { runtime: "^1", css: "^1" }
+# The page loads helm-ui for the shared gallery; it still draws its own takes
+# rail, viewer and timeline, so this pins what it loads and nothing else.
+sdk: { runtime: "^1", ui: "^1", css: "^1" }
 # Contacted at build or run time, which is what the field means and what the
 # approval screen shows. The Go proxy and the checksum database are here
 # because `go build` resolves helm-runtime-sdk through them; Hugging Face is

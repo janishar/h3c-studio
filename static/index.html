@@ -43,6 +43,9 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
     </div>
   </div>
   <div class="barright">
+    <!-- Shown only when the studio is running under helmstudio, which is the
+         only thing that has a gallery to show (static/helmstudio.js). -->
+    <button class="pathbutton" id="galleryButton" type="button" hidden>Gallery</button>
     <button class="pathbutton" id="timelineButton" type="button">Create Timeline</button>
     <button class="pathbutton" id="modelButton" type="button"><i class="dot" id="modelDot"></i>Model</button>
     <button class="pathbutton icon" id="notifyButton" type="button" title="Notify me when a render finishes" aria-pressed="false">🔔</button>
@@ -408,6 +411,7 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
 <script src="/static/prompt.js"></script>
 <script src="/static/takes.js"></script>
 <script src="/static/timeline.js"></script>
+<script src="/static/helmstudio.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

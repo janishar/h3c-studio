@@ -504,3 +504,34 @@ body.resizing { cursor: ns-resize; user-select: none; }
    root while it follows the launcher, and our own switch steps aside
    (helmstudio docs/decisions.md M6 Q19). Standalone it is there as before. */
 :root[data-helm-theme-follows] .themeswitch { display: none; }
+
+/* ── helmstudio's components ──────────────────────────────────────────────
+   The dialog is h3 studio's chrome; what it holds is helmstudio's and styles
+   itself from the same tokens. It is sized here because a component fills
+   the box it is given (helm-gallery is height: 100%) and decides nothing
+   about how big that box should be. */
+.helmstudio-dialog {
+  width: min(1200px, 92vw);
+  height: min(800px, 86vh);
+  padding: 0;
+  color: var(--helm-text-primary);
+  background: var(--helm-ground-panel);
+  border: 1px solid var(--helm-border-subtle);
+  border-radius: var(--helm-radius-md);
+}
+.helmstudio-dialog::backdrop { background: rgb(0 0 0 / 0.5); }
+.helmstudio-dialog > .helmstudio-head {
+  display: flex;
+  gap: var(--helm-space-3);
+  align-items: center;
+  padding: var(--helm-space-3) var(--helm-space-4);
+  border-bottom: 1px solid var(--helm-border-subtle);
+}
+.helmstudio-title { margin: 0; font: var(--helm-type-title); }
+.helmstudio-status { font: var(--helm-type-meta); color: var(--helm-text-secondary); }
+.helmstudio-spacer { flex: 1 1 auto; }
+.helmstudio-dialog > helm-gallery {
+  display: block;
+  height: calc(100% - 3.5rem);
+  padding: var(--helm-space-4);
+}
