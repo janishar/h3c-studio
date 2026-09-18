@@ -1,5 +1,3 @@
-sessions/**
-!sessions/.keep
 /dist/
 /.gocache/
 /.gomodcache/
