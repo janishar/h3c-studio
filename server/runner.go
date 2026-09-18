@@ -542,6 +542,10 @@ func (r *Runner) finishTake(job *Job, produced string) {
 		meta["preview_dir"] = previewRel
 	}
 	_ = writeJSONAtomic(sidecarFor(final, false), meta)
+
+	// The take is on disk and recorded here; helmstudio, if this studio runs
+	// under it, gets it too. A no-op standalone, and never fatal either way.
+	r.cfg.Platform.RecordTake(final, job.Label, job.Session, probe, meta)
 }
 
 // jobEmit handles a displayed line (possibly a \r progress update).

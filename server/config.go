@@ -43,6 +43,11 @@ type Config struct {
 	FFmpeg  string
 	FFprobe string
 
+	// Platform is helmstudio when the studio runs under it, and nil when it
+	// runs on its own. Resolved once: the environment it reads is fixed for
+	// the life of the process.
+	Platform *Platform
+
 	sessionLocks keyedMutex
 }
 
@@ -71,6 +76,7 @@ func NewConfig(opts Options) (*Config, error) {
 		model:        model,
 		Root:         root,
 		Sessions:     sessions,
+		Platform:     NewPlatform(),
 		Host:         opts.Host,
 		Port:         opts.Port,
 		Dev:          opts.Dev,
