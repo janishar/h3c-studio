@@ -721,6 +721,10 @@ function bindTerminal() {
     $("terminalOutput").hidden = tab !== "log";
     $("profile").hidden = tab !== "profile";
     $("renderLogPane").hidden = tab !== "render";
+    // follow and Clear drive the Output pane and nothing else. helm-terminal
+    // brings its own follow, wrap and copy, so showing ours beside them would
+    // put two follows on screen with only one of them connected to anything.
+    $("consoleActions").hidden = tab === "render";
     if (tab === "profile") renderTimingChart();
   });
   $("clearLog").onclick = () => { $("terminalOutput").replaceChildren(); lastLogReplaceable = false; };

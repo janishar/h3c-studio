@@ -274,7 +274,7 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
                job log to stream (static/helmstudio.js). -->
           <button data-tab="render" type="button" role="tab" id="renderLogTab" hidden>Render log</button>
         </div>
-        <div class="conactions">
+        <div class="conactions" id="consoleActions">
           <label class="check inline"><input type="checkbox" id="followLog" checked> follow</label>
           <button class="ghost sm" id="clearLog" type="button">Clear</button>
         </div>

@@ -350,6 +350,7 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
    element inside one needs a height to draw into. */
 #renderLogPane { display: flex; flex: 1; min-height: 0; padding: 9px 13px; }
 #renderLogPane[hidden] { display: none; }
+.conactions[hidden] { display: none; }
 #renderLogPane helm-terminal { display: block; flex: 1 1 auto; min-height: 0; }
 #terminalOutput .cmdline { color: var(--helm-log-accent); }
 #terminalOutput .err { color: var(--helm-status-error); }
