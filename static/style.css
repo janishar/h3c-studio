@@ -530,8 +530,29 @@ body.resizing { cursor: ns-resize; user-select: none; }
 .helmstudio-title { margin: 0; font: var(--helm-type-title); }
 .helmstudio-status { font: var(--helm-type-meta); color: var(--helm-text-secondary); }
 .helmstudio-spacer { flex: 1 1 auto; }
-.helmstudio-dialog > helm-gallery {
-  display: block;
+.helmstudio-dialog > helm-gallery,
+.helmstudio-dialog > .helmstudio-body {
+  box-sizing: border-box;
   height: calc(100% - 3.5rem);
   padding: var(--helm-space-4);
+}
+.helmstudio-dialog > helm-gallery { display: block; }
+/* A custom element is display: inline until something says otherwise, and an
+   inline box gives a component nothing to draw in — helm-timeline came out
+   0x0 here. The column is what hands it the height it fills. */
+.helmstudio-dialog > .helmstudio-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.helmstudio-body > helm-timeline { display: block; flex: 1 1 auto; min-height: 0; }
+.helmstudio-empty { margin: 0; font: var(--helm-type-body); color: var(--helm-text-secondary); }
+.helmstudio-select {
+  font: var(--helm-type-body);
+  height: var(--helm-control-sm);
+  padding: 0 var(--helm-space-2);
+  color: var(--helm-text-primary);
+  background: var(--helm-ground-page);
+  border: 1px solid var(--helm-border-strong);
+  border-radius: var(--helm-radius-sm);
 }

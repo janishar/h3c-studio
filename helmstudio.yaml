@@ -27,7 +27,7 @@ runtime:
 # made is in the gallery every studio shares. Nothing else yet — sessions stay
 # its own directories, so kv, records and timeline are not requested and the
 # gallery item carries no session_id.
-capabilities: [assets, gallery]
+capabilities: [assets, gallery, timeline]
 # The page loads helm-ui for the shared gallery; it still draws its own takes
 # rail, viewer and timeline, so this pins what it loads and nothing else.
 sdk: { runtime: "^1", ui: "^1", css: "^1" }
