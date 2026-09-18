@@ -237,7 +237,7 @@ Run & Debug panel (`Cmd+Shift+D`, pick one, `F5`):
 | **h3 studio (debug - source)** | Runs from source with the embedded UI, for stepping through the server. |
 | **h3 studio (LAN - 0.0.0.0, no auth)** | Binds to all interfaces and prompts for the host name other machines use — see [Security](#security). |
 | **h3 studio (dist build)** | Builds and runs `dist/h3studio` under the debugger. |
-| **h3 studio (under helm dev)** | Runs it under helmstudio's platform API and attaches the debugger — see [Running under helmstudio](#running-under-helmstudio). |
+| **h3 studio** | Runs it under helmstudio's platform API and attaches the debugger — see [Running under helmstudio](#running-under-helmstudio). |
 
 All but "custom paths" have `--model` hardcoded to a sample path — edit it in
 `.vscode/launch.json`, or use "custom paths". `.vscode/tasks.json` adds
@@ -252,24 +252,38 @@ gallery going through helmstudio, and the page taking helm-css, the theme and
 this studio's hue from the `/helm/` proxy — run it under `helm dev`:
 
 ```bash
-H3_MODEL=/path/to/MiniMax-H3 bash scripts/dev.sh
-bash scripts/dev.sh stop
+H3_MODEL=/path/to/MiniMax-H3 bash scripts/run.sh
+bash scripts/run.sh stop
 ```
 
 `helm` comes from [helmstudio's installer][helm-install] and needs no
 helmstudio checkout; `H3_MODEL` points at a MiniMax-H3 directory you already
-have, which is linked read-only rather than downloaded. Everything the studio
+have, which is linked read-only rather than downloaded. `HELM` names a
+particular helm if you do not want the one on `PATH`. Everything the studio
 keeps goes to `.helm/` beside the repository, which is gitignored.
 
-**`helm dev` runs no build steps** — the checkout is yours — so `scripts/dev.sh`
+**`helm dev` runs no build steps** — the checkout is yours — so the script
 builds `dist/h3studio` first. A stale binary is the difference between the
 `/helm/` proxy answering and returning 404.
 
-From VS Code the same three are **run: h3 studio (helm dev)**, **debug: h3
-studio (helm dev)** and **stop: h3 studio**. The launch configuration *h3
-studio (under helm dev)* runs the debug task — which builds with `-N -l` so
-Delve can step through what the source says — and attaches to the studio
-`helm dev` started.
+To debug it there, set `H3_DLV` to a port:
+
+```bash
+H3_MODEL=/path/to/MiniMax-H3 H3_DLV=2345 bash scripts/run.sh
+```
+
+`helm dev` hands the studio a restricted environment, and the manifest names
+`./dist/h3studio` rather than a debugger, so the binary moves aside and that
+name becomes a shim running it under [Delve][dlv], which listens on the port.
+It is built with `-N -l` so stepping follows the source, and Delve is given
+`--continue` so the studio starts rather than waiting for a client. A run
+without `H3_DLV` builds a normal binary over the shim again.
+
+From VS Code the same three are **run: h3 studio**, **debug: h3 studio** and
+**stop: h3 studio**, and the *h3 studio* launch configuration runs the debug
+task and attaches to `127.0.0.1:2345`.
+
+[dlv]: https://github.com/go-delve/delve
 
 [helm-install]: https://github.com/janishar/helmstudio#getting-started
 

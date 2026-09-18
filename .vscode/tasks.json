@@ -63,12 +63,12 @@
       "problemMatcher": []
     },
     {
-      "label": "run: h3 studio (helm dev)",
-      "detail": "scripts/dev.sh: builds, then runs under helm dev so the /helm/ proxy and the studio API are real",
+      "label": "run: h3 studio",
+      "detail": "scripts/run.sh: under helm dev, which keeps everything h3 studio keeps in .helm/",
       "type": "shell",
       "command": "bash",
       "args": [
-        "scripts/dev.sh"
+        "scripts/run.sh"
       ],
       "options": {
         "cwd": "${workspaceFolder}",
@@ -87,24 +87,24 @@
         },
         "background": {
           "activeOnStart": true,
-          "beginsPattern": "^h3 studio: (building|starting)",
+          "beginsPattern": "^(build|weights|dlv|helm dev):",
           "endsPattern": "h3 studio  →  http://"
         }
       }
     },
     {
-      "label": "debug: h3 studio (helm dev)",
-      "detail": "the same, built with -N -l so Delve can attach and step through the source",
+      "label": "debug: h3 studio",
+      "detail": "scripts/run.sh with H3_DLV: the studio listens for the debugger on 127.0.0.1:2345, and the h3 studio launch attaches",
       "type": "shell",
       "command": "bash",
       "args": [
-        "scripts/dev.sh"
+        "scripts/run.sh"
       ],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
           "H3_MODEL": "/Users/janisharali/GenAI/minimax-h3-mlx/MiniMax-H3",
-          "H3_DEBUG": "1"
+          "H3_DLV": "2345"
         }
       },
       "isBackground": true,
@@ -118,18 +118,18 @@
         },
         "background": {
           "activeOnStart": true,
-          "beginsPattern": "^h3 studio: (building|starting)",
+          "beginsPattern": "^(build|weights|dlv|helm dev):",
           "endsPattern": "h3 studio  →  http://"
         }
       }
     },
     {
       "label": "stop: h3 studio",
-      "detail": "ends the helm dev that scripts/dev.sh last started, which stops the studio with it",
+      "detail": "ends the helm dev scripts/run.sh last started, which stops the studio with it",
       "type": "shell",
       "command": "bash",
       "args": [
-        "scripts/dev.sh",
+        "scripts/run.sh",
         "stop"
       ],
       "options": {

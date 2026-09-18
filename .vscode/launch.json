@@ -2,12 +2,14 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "h3 studio (under helm dev)",
+      "name": "h3 studio",
       "type": "go",
       "request": "attach",
-      "mode": "local",
-      "processId": "h3studio",
-      "preLaunchTask": "debug: h3 studio (helm dev)",
+      "mode": "remote",
+      "host": "127.0.0.1",
+      "port": 2345,
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "debug: h3 studio",
       "postDebugTask": "stop: h3 studio"
     },
     {
