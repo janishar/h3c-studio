@@ -225,6 +225,35 @@ left pane. Interactive h3.c starts when you click **Load h3.c** or send the
 first interactive render, so starting the studio itself never loads the model.
 **⌘/Ctrl+Enter** renders from anywhere; **⇧⌘/Ctrl+Enter** queues three seeds.
 
+That is h3 studio on its own: everything it makes stays under `--root`, and it
+needs nothing else installed.
+
+### With helmstudio
+
+[helmstudio][helmstudio] installs and runs studios, and keeps what they make in
+one library. h3 studio runs under it without changing how it works — the same
+server, the same page, the same takes on disk — and gains four things it cannot
+do alone:
+
+| | |
+| --- | --- |
+| **Gallery** | Every take this studio records, beside what other studios made, in one grid. The **Gallery** button in the top bar. |
+| **Timeline** | **Create Timeline** opens a helmstudio sequence: clips from any studio, trimmed and dissolved, with an export it runs for you. On its own that button still opens h3 studio's own combine-videos editor. |
+| **Render log** | A third tab in the Terminal panel, streaming the render as helmstudio sees it — it reconnects after a dropped stream and tells you what it missed. |
+| **The launcher** | A render appears in helmstudio as a job with its progress, so what this studio is doing is visible from outside it. |
+
+It also wears helmstudio's theme and this studio's own colour, taken live from
+whatever is running it.
+
+Nothing is lost when helmstudio is not there. The Gallery button and the Render
+log tab are simply absent, Create Timeline opens the built-in editor, and the
+page keeps its vendored copy of helm-css and its own theme switch. The same
+binary does both; it decides by whether helmstudio handed it an API to talk to.
+
+To run it that way yourself, see [Running under helmstudio](#running-under-helmstudio).
+
+[helmstudio]: https://github.com/janishar/helmstudio
+
 ### Run from VS Code
 
 `.vscode/launch.json` ships ready-made configurations for the Go extension's
@@ -247,9 +276,12 @@ and the three below.
 ### Running under helmstudio
 
 The configurations above run the server on its own, which is the fastest way
-to work on it. To run it the way a user does — with sessions, assets and the
-gallery going through helmstudio, and the page taking helm-css, the theme and
+to work on it. To run it the way a user does — takes adopted into helmstudio's
+gallery, renders reported as jobs, and the page taking helm-css, the theme and
 this studio's hue from the `/helm/` proxy — run it under `helm dev`:
+
+Sessions are still h3 studio's own directories under `--root`; only what a take
+becomes is helmstudio's.
 
 ```bash
 H3_MODEL=/path/to/MiniMax-H3 bash scripts/run.sh
