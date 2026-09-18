@@ -345,6 +345,12 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .tabs button.on { background: var(--helm-ground-raised); border-color: var(--helm-border-strong); color: var(--helm-text-primary); }
 #terminalOutput { flex: 1; min-height: 0; margin: 0; padding: 9px 13px; overflow: auto; font: 400 11px/1.6 var(--helm-font-mono); color: var(--helm-log-text); white-space: pre-wrap; overflow-wrap: anywhere; }
 #terminalOutput[hidden] { display: none; }
+/* The render log takes the same box the output pane does. display is set
+   because a hidden element with display: flex is still hidden, but a custom
+   element inside one needs a height to draw into. */
+#renderLogPane { display: flex; flex: 1; min-height: 0; padding: 9px 13px; }
+#renderLogPane[hidden] { display: none; }
+#renderLogPane helm-terminal { display: block; flex: 1 1 auto; min-height: 0; }
 #terminalOutput .cmdline { color: var(--helm-log-accent); }
 #terminalOutput .err { color: var(--helm-status-error); }
 .resize-handle { position: absolute; top: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; z-index: 2; touch-action: none; }

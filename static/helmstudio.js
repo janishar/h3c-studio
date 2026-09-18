@@ -16,6 +16,15 @@
 
 const HELM_SDK = "/helm/sdk/v1";
 
+/**
+ * Point the Render log tab at the render that is running.
+ *
+ * app.js calls this on every queue update. Standalone it is this no-op and
+ * stays one: there is no job log to follow, so the tab never appears and the
+ * page behaves as it always did. connectHelmstudio replaces it.
+ */
+let showHelmRenderLog = () => {};
+
 /** A dialog wearing helm-css, with the studio's own chrome around a component. */
 function helmDialog(className, head, body) {
   const d = el("dialog", { class: `helmstudio-dialog ${className}` }, head, body);
@@ -236,6 +245,8 @@ async function connectHelmstudio() {
     button.addEventListener("click", () => gallery.browse());
   }
 
+  mountRenderLog();
+
   // Create Timeline opens helmstudio's sequence rather than h3 studio's own
   // combine-videos editor, which stays exactly as it is for a studio running
   // on its own. timeline.js sets this handler; under helmstudio there is a
@@ -244,4 +255,37 @@ async function connectHelmstudio() {
   const timelineButton = $("timelineButton");
   if (timelineButton) timelineButton.onclick = () => timeline.open();
   return true;
+}
+
+/**
+ * The render log: helm-terminal streaming the job helmstudio keeps.
+ *
+ * It sits in its own tab beside Output rather than replacing it. h3 studio's
+ * terminal is one pane for three things — the render's output, shell commands
+ * and interactive h3 — and helm-terminal streams exactly one job, so
+ * replacing it would trade two of those away. What it adds is what h3
+ * studio's cannot do: rows drawn only where they are visible, ANSI colour,
+ * and reconnection from the last line it saw, so a dropped stream resumes and
+ * says what it missed instead of losing it in silence.
+ */
+function mountRenderLog() {
+  const pane = $("renderLogPane");
+  const tab = $("renderLogTab");
+  if (!pane || !tab) return;
+
+  const term = mountComponent(pane, "<helm-terminal follow></helm-terminal>");
+  term.client = window.helm;
+  tab.hidden = false;
+
+  showHelmRenderLog = (job) => {
+    const id = job && job.helm_job;
+    // No job means nothing to stream: an older render from before this ran,
+    // or a studio started without helmstudio. Clearing is what tells the
+    // component to stop rather than keep showing a finished render's log.
+    if (!id) {
+      term.removeAttribute("job");
+      return;
+    }
+    if (term.getAttribute("job") !== id) term.setAttribute("job", id);
+  };
 }

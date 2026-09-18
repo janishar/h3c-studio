@@ -270,6 +270,9 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
         <div class="tabs" id="consoleTabs" role="tablist">
           <button class="on" data-tab="log" type="button" role="tab">Output</button>
           <button data-tab="profile" type="button" role="tab">Timing</button>
+          <!-- Shown only under helmstudio, which is the only thing that has a
+               job log to stream (static/helmstudio.js). -->
+          <button data-tab="render" type="button" role="tab" id="renderLogTab" hidden>Render log</button>
         </div>
         <div class="conactions">
           <label class="check inline"><input type="checkbox" id="followLog" checked> follow</label>
@@ -277,6 +280,7 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
         </div>
       </div>
       <pre id="terminalOutput"></pre>
+      <div id="renderLogPane" hidden></div>
       <div id="profile" hidden>
         <div class="timing-chart" id="timingChart"></div>
         <table id="profileTable"><tbody></tbody></table>

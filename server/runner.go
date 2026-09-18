@@ -78,28 +78,32 @@ type Job struct {
 
 // JobSummary is the JSON shape of a job for the UI and sidecars.
 type JobSummary struct {
-	ID             string         `json:"id"`
-	Session        string         `json:"session"`
-	Label          string         `json:"label"`
-	State          string         `json:"state"`
-	Phase          string         `json:"phase"`
-	Stage          string         `json:"stage"`
-	Progress       []int          `json:"progress"`
-	Output         string         `json:"output,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	Hint           string         `json:"hint,omitempty"`
-	Started        float64        `json:"started,omitempty"`
-	Finished       float64        `json:"finished,omitempty"`
-	Seed           int64          `json:"seed"`
-	RunMode        string         `json:"run_mode"`
-	Command        []string       `json:"command,omitempty"`
-	CommandDisplay string         `json:"command_display,omitempty"`
-	Profile        []ProfileRow   `json:"profile"`
-	PreviewCount   int            `json:"preview_count"`
-	PreviewLatest  *PreviewInfo   `json:"preview_latest,omitempty"`
-	EstimateS      float64        `json:"estimate_s,omitempty"`
-	EtaS           float64        `json:"eta_s,omitempty"`
-	Params         map[string]any `json:"params,omitempty"`
+	ID             string   `json:"id"`
+	Session        string   `json:"session"`
+	Label          string   `json:"label"`
+	State          string   `json:"state"`
+	Phase          string   `json:"phase"`
+	Stage          string   `json:"stage"`
+	Progress       []int    `json:"progress"`
+	Output         string   `json:"output,omitempty"`
+	Error          string   `json:"error,omitempty"`
+	Hint           string   `json:"hint,omitempty"`
+	Started        float64  `json:"started,omitempty"`
+	Finished       float64  `json:"finished,omitempty"`
+	Seed           int64    `json:"seed"`
+	RunMode        string   `json:"run_mode"`
+	Command        []string `json:"command,omitempty"`
+	CommandDisplay string   `json:"command_display,omitempty"`
+	// HelmJob is this render's helmstudio task job, when it is running under
+	// helmstudio. The page streams that job's log in helm-terminal; absent,
+	// it has nothing to stream and says so by not being there.
+	HelmJob       string         `json:"helm_job,omitempty"`
+	Profile       []ProfileRow   `json:"profile"`
+	PreviewCount  int            `json:"preview_count"`
+	PreviewLatest *PreviewInfo   `json:"preview_latest,omitempty"`
+	EstimateS     float64        `json:"estimate_s,omitempty"`
+	EtaS          float64        `json:"eta_s,omitempty"`
+	Params        map[string]any `json:"params,omitempty"`
 }
 
 func (j *Job) Summary(withParams bool) JobSummary {
@@ -111,7 +115,7 @@ func (j *Job) Summary(withParams bool) JobSummary {
 		Started: j.Started, Finished: j.Finished, Seed: j.Params.Seed, RunMode: j.Params.RunMode,
 		Command: append([]string(nil), j.Command...), CommandDisplay: j.CommandDisplay,
 		Profile: append([]ProfileRow{}, j.Profile...), PreviewCount: j.PreviewCount,
-		EstimateS: j.EstimateS, EtaS: j.EtaS,
+		EstimateS: j.EstimateS, EtaS: j.EtaS, HelmJob: j.task.JobID(),
 	}
 	if j.PreviewLatest != nil {
 		latest := *j.PreviewLatest

@@ -514,6 +514,9 @@ function isActive(job) { return job.state === "running" || job.state === "cancel
 function renderQueue(items) {
   state.queue = items;
   const running = items.find(isActive);
+  // Under helmstudio the Render log tab follows whatever is running; with no
+  // helmstudio this is a no-op that was never replaced.
+  showHelmRenderLog(running || items[0]);
   const pending = items.filter((job) => job.state === "queued");
   if (running && state.runningId !== running.id) {
     state.runningId = running.id;
@@ -717,6 +720,7 @@ function bindTerminal() {
     [...$("consoleTabs").children].forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
     $("terminalOutput").hidden = tab !== "log";
     $("profile").hidden = tab !== "profile";
+    $("renderLogPane").hidden = tab !== "render";
     if (tab === "profile") renderTimingChart();
   });
   $("clearLog").onclick = () => { $("terminalOutput").replaceChildren(); lastLogReplaceable = false; };

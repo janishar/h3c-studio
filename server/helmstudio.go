@@ -169,6 +169,15 @@ func (p *Platform) StartTask(label string) *Task {
 	return t
 }
 
+// JobID is the helmstudio job this render is reported on, or "" when there is
+// none. A nil Task answers "", so a caller never asks whether there is one.
+func (t *Task) JobID() string {
+	if t == nil {
+		return ""
+	}
+	return t.id
+}
+
 // Log buffers one line for helmstudio. It never blocks the render and never
 // writes from the caller's goroutine.
 func (t *Task) Log(line string) {
