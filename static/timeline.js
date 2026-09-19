@@ -14,6 +14,19 @@ async function loadTimeline() {
   renderTimelineList();
 }
 
+/**
+ * openSequence asks for the editor that holds this sequence.
+ *
+ * This panel lists sequences and knows nothing about the dialog that edits
+ * them: helmstudio.js mounts that and listens for this. With nothing behind
+ * the proxy nothing listens, and nothing lists a sequence to click either.
+ */
+function openSequence(item) {
+  const id = item.meta?.timeline_id;
+  if (!id) return;
+  document.dispatchEvent(new CustomEvent("h3:open-sequence", { detail: { id } }));
+}
+
 /** A sequence helmstudio keeps, rather than a video this session rendered. */
 function isSequence(item) {
   return item.meta?.source === "helmstudio";
@@ -121,10 +134,11 @@ function renderTimelineList() {
   }
   $("timelineList").replaceChildren(...state.timeline.map((item) => {
     // A sequence has no file here: it is an edit helmstudio keeps, and
-    // exporting one is its own job. So clicking one plays its clips rather
-    // than a file, it is not selectable into the combine editor, and it is
-    // offered none of the three actions below, every one of which reads or
-    // deletes a file in this session.
+    // exporting one is its own job. So clicking one opens the editor that
+    // holds it — an edit is a thing to open, the way a document is — rather
+    // than playing it where a rendered take plays. Watching it as it stands
+    // is still one button away, and it is not selectable into the combine
+    // editor, which works on files in this session.
     const sequence = isSequence(item);
     const playable = sequence && sequenceClips(item).length > 0;
     const on = sequence
@@ -132,7 +146,7 @@ function renderTimelineList() {
       : item.name === state.selectedTimeline;
     return el("li", {
       class: on ? "on" : "",
-      onclick: sequence ? (playable ? () => playSequence(item) : null) : () => selectTimeline(item.name),
+      onclick: sequence ? () => openSequence(item) : () => selectTimeline(item.name),
     },
       el("div", { class: "row" },
         el("div", { class: "thumb" }, item.thumb ? el("img", { src: item.thumb, alt: "", loading: "lazy" }) : null),
@@ -140,7 +154,10 @@ function renderTimelineList() {
           el("div", { class: "nm", text: item.name, title: item.name }),
           el("div", { class: "meta", text: timelineMeta(item) }))),
       sequence
-        ? null
+        ? (playable
+          ? el("div", { class: "ops" },
+            takeButton("Play", "Watch the sequence as it stands, clip by clip", () => playSequence(item)))
+          : null)
         : el("div", { class: "ops" },
           takeButton("Use video", "Copy into inputs and add as a video reference", () => useVideoRef(item, "timeline")),
           takeButton("Last frame", "Extract the last frame into inputs", () => useFrame(item, "last", "timeline")),
