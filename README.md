@@ -5,15 +5,12 @@ MiniMax-H3 video/audio inference on Apple Silicon.
 
 h3 studio is a Go web server (no JS build step, one Go dependency) that drives
 the `h3` binary: it builds the CLI arguments, runs one-shot or interactive
-sessions, manages references and anchors, queues renders, chains shots
-together, and surfaces live profiling output — all from a browser tab, with
-nothing sent off your machine.
-
-It runs as a [helmstudio][helmstudio] studio, and only that way: helmstudio
-installs it, launches it, hands it the directory it keeps sessions in, and
-takes every finished take into the library it shares with the other studios.
-The one Go dependency is helmstudio's runtime SDK. Start at
-[Set up helmstudio](#set-up-helmstudio).
+sessions, manages references and anchors, queues renders, chains shots together
+and surfaces live profiling — from a browser tab, with nothing sent off your
+machine. It runs as a [helmstudio][helmstudio] studio and only that way:
+helmstudio installs it, launches it, hands it the directory it keeps sessions
+in, and takes every finished take into the library it shares with the other
+studios.
 
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%28Apple%20Silicon%29-lightgrey?logo=apple)](#requirements)
@@ -24,418 +21,385 @@ The one Go dependency is helmstudio's runtime SDK. Start at
   <img src="docs/assets/screenshot-1.png" alt="h3 studio web UI: a render in progress with live preview, terminal output, take history, and timeline panels" width="100%">
 </p>
 
+## Quick start
+
+Two ways in — pick one. **h3 studio never starts on its own**, since the
+directory it keeps sessions in and the library it records takes into both come
+from whatever launched it. The paths differ in what launches it, and each wants
+a different piece of helmstudio.
+
+| | **A — Install it** | **B — Run from a checkout** |
+| --- | --- | --- |
+| For | Using the studio | Changing the studio |
+| First install | the **launcher** — helmstudio's daemon and web UI | the **`helm` CLI** — `helm dev` runs one studio, no daemon |
+| Then | one click in its library | `git clone`, `make`, `bash scripts/run.sh` |
+| Builds | the launcher runs both | the engine once, by hand; `scripts/run.sh` rebuilds the server every run |
+| Weights | the launcher downloads or links them | you point `H3_MODEL` at a checkpoint |
+| Steps | [Path A](#path-a-install-from-the-launcher-recommended) | [Path B](#path-b-run-from-a-checkout) |
+
 ## Motivation
 
-Video diffusion on Apple Silicon is underserved. ComfyUI has no first-class
-MLX support, so it's stuck running these models through PyTorch's `mps`
-backend — which is slow for this workload and holds onto a lot more unified
-memory than the model actually needs, on hardware where that memory is
-shared with everything else running. h3.c takes a different approach: it's a
-native Metal implementation with no PyTorch/MLX in the loop, built
-specifically for MiniMax-H3 on Apple GPUs. h3 studio exists to make that
-engine usable as a real tool — a browser UI over the CLI — without pulling in
-a Python stack or a node-graph app to get there.
+Video diffusion on Apple Silicon is underserved. ComfyUI has no first-class MLX
+support, so it runs these models through PyTorch's `mps` backend — slow for this
+workload, and holding far more unified memory than the model needs on hardware
+that shares it with everything else. h3.c is a native Metal implementation with
+no PyTorch/MLX in the loop, built for MiniMax-H3 on Apple GPUs; h3 studio makes
+it usable as a real tool without a Python stack or a node-graph app.
 
 ## Table of contents
 
-- [Motivation](#motivation)
 - [Requirements](#requirements)
-- [Installation](#installation)
+- [Path A: Install from the launcher](#path-a-install-from-the-launcher-recommended)
+- [Path B: Run from a checkout](#path-b-run-from-a-checkout)
+  — [`scripts/run.sh`](#what-scriptsrunsh-does) ·
+  [Troubleshooting](#troubleshooting) ·
+  [Debugging](#debugging-and-vs-code)
 - [Downloading the weights (deduplicated)](#downloading-the-weights-deduplicated)
-- [Usage](#usage)
-  - [Set up helmstudio](#set-up-helmstudio)
-  - [Running](#running)
-  - [What helmstudio adds](#what-helmstudio-adds)
-  - [Running from a checkout](#running-from-a-checkout)
-  - [Run from VS Code](#run-from-vs-code)
+- [Using the studio](#using-the-studio)
+  — [Flags](#command-line-reference) ·
+  [What helmstudio adds](#what-helmstudio-adds)
 - [Features](#features)
 - [Sessions and state](#sessions-and-state)
 - [Notes for an external drive](#notes-for-an-external-drive)
-- [Security](#security)
-- [Limits](#limits)
-- [Contributing](#contributing)
-- [License](#license)
-- [Acknowledgments](#acknowledgments)
+- [Security](#security) · [Limits](#limits)
+- [Contributing](#contributing) · [License](#license) ·
+  [Acknowledgments](#acknowledgments)
 
 ## Requirements
 
-### Hardware and OS
+**Apple Silicon Mac**, on macOS recent enough for the Metal 4/TensorOps
+frameworks (26.x was used for development). h3.c uses Metal,
+MetalPerformanceShaders, MetalPerformanceShadersGraph and Accelerate — no Intel,
+no non-Apple GPUs. M3- and M5-class chips are the tested targets; M5 also gets
+native Metal 4/TensorOps fast paths (int8 MLP, quantized attention) that M3
+falls back from automatically. Command Line Tools are enough to build h3.c; full
+Xcode is not needed.
 
-- **Apple Silicon Mac.** h3.c uses native Metal, MetalPerformanceShaders,
-  MetalPerformanceShadersGraph, and Accelerate — it does not run on Intel or
-  on non-Apple GPUs. M3-class and M5-class chips are the tested targets; M5
-  additionally gets native Metal 4/TensorOps fast paths (int8 MLP, quantized
-  attention) that M3 falls back from automatically.
-- **macOS** recent enough for the Metal 4/TensorOps frameworks (macOS 26.x was
-  used for development). Command Line Tools (`clang`) are sufficient to build
-  h3.c — a full Xcode install is not required.
-- **Unified memory:** validated on a 64 GB MacBook Pro (M5). Lower-memory
-  Macs can still run smaller canvases and `--ssd-streaming`, but should
-  expect to tune the model flags described in [`h3c/README.md`](h3c/README.md).
-- **Disk:** the full MiniMax-H3 checkpoint (both pipelines) is about **196 GB**
-  — `FL2VA` (~62 GB) for prompt/first-last-frame generation and `Ref2VA`
-  (~134 GB) for reference-conditioned generation. Both pipelines duplicate
-  most of their weights, so this can be brought down to **~66 GB**; see
-  [Downloading the weights (deduplicated)](#downloading-the-weights-deduplicated).
-  Fast local storage (internal NVMe) is recommended; see
-  [Notes for an external drive](#notes-for-an-external-drive) if the
-  checkpoint lives on external storage.
+**Memory:** validated on a 64 GB MacBook Pro (M5). Smaller Macs can run smaller
+canvases and `--ssd-streaming`, but expect to tune the flags in
+[`h3c/README.md`](h3c/README.md).
 
-### Toolchain
+**Disk:** the full checkpoint is ~196 GB — `FL2VA` (~62 GB) for prompt and
+first/last-frame generation, `Ref2VA` (~134 GB) for reference-conditioned. They
+duplicate most of their weights, so
+[deduplicating](#downloading-the-weights-deduplicated) brings it to **~66 GB**.
+Internal NVMe is recommended; for external storage see
+[Notes for an external drive](#notes-for-an-external-drive).
 
-- **helmstudio's `helm`** — what runs h3 studio, and what installs it; the
-  studio does not start on its own. See
-  [Set up helmstudio](#set-up-helmstudio). The rest of this list is what its
-  manifest asks for before it will install the studio (`requires.tools`).
-- **Go 1.27+** to build h3 studio itself (`go.mod` pins `go 1.27.1`). The build
-  fetches one module — helmstudio's runtime SDK — so the first build wants the
-  Go module proxy; nothing else is vendored, generated or downloaded.
-- **Command Line Tools / clang** to build the `h3` binary (h3.c's `Makefile`
-  links `Foundation`, `Metal`, `MetalPerformanceShaders`,
-  `MetalPerformanceShadersGraph`, and `Accelerate`).
-- **FFmpeg and FFprobe on `PATH`** — required by h3.c for decoding reference
-  media and encoding MP4 output (`H3_FFMPEG` / `H3_FFPROBE` env vars can point
-  at explicit executables instead). Install with `brew install ffmpeg`.
-- **git** with submodule support — this repo vendors h3.c as the `h3c`
-  submodule.
+**Toolchain.** Path A needs only the launcher — it installs the rest and checks
+this list itself (the manifest's `requires.tools`). Path B needs all of it:
 
-### Model
+| Tool | Why | Install |
+| --- | --- | --- |
+| **the launcher** *(Path A)* | installs, builds and runs the studio; keeps the shared gallery | [Path A, Step 1](#step-1-install-the-launcher) |
+| **`helm`** *(Path B)* | the studio author's CLI; `helm dev` runs this checkout from its manifest | [Path B, Step 1](#step-1-install-helm-and-the-toolchain) |
+| **Go 1.27+** | builds the server; fetches one module, helmstudio's runtime SDK, so the first build wants the Go module proxy | `brew install go` |
+| **Command Line Tools** | builds `h3` (Metal, MPS, MPSGraph, Accelerate) | `xcode-select --install` |
+| **FFmpeg + FFprobe** | h3.c decodes references and encodes MP4 with them (`H3_FFMPEG` / `H3_FFPROBE` override the lookup) | `brew install ffmpeg` |
+| **git** with submodules | h3.c is vendored as the `h3c` submodule | with the Command Line Tools |
 
-h3 studio does not download or convert the model itself; point it at a local
-MiniMax-H3 checkpoint directory prepared for h3.c. The published weights are
-[`MiniMaxAI/MiniMax-H3`](https://huggingface.co/MiniMaxAI/MiniMax-H3) on
-Hugging Face, laid out as an `FL2VA/` and a `Ref2VA/` pipeline directory (each
-with `text_encoder/`, `tokenizer/`, `processor/`, `transformer/`,
-`video_vae/`, `audio_vae/`, and a `model_index.json`). Review that model's own
-license and usage terms on Hugging Face before downloading — it is not
-covered by this repository's license (see [License](#license)).
+**Model.** h3 studio neither downloads nor converts the model; it is pointed at
+a local checkpoint prepared for h3.c. The weights are
+[`MiniMaxAI/MiniMax-H3`](https://huggingface.co/MiniMaxAI/MiniMax-H3), laid out
+as `FL2VA/` and `Ref2VA/` pipeline directories (each with `text_encoder/`,
+`tokenizer/`, `processor/`, `transformer/`, `video_vae/`, `audio_vae/` and a
+`model_index.json`). Review its own license before downloading — it is not
+covered by this repository's (see [License](#license)).
 
-## Installation
+## Path A: Install from the launcher (recommended)
 
-Installing h3 studio is helmstudio's job: it runs the steps below itself, from
-this repository's own manifest. If you want to *use* the studio, that is the
-whole of it — see [Set up helmstudio](#set-up-helmstudio).
+The launcher clones this repository, runs the build steps from
+[`helmstudio.yaml`](helmstudio.yaml) and fetches the weights. Nothing to clone
+or build by hand.
 
-What follows is the same thing by hand, for working on the studio. It ends at a
-built binary, which does not run on its own; starting it is
-[Running from a checkout](#running-from-a-checkout).
+### Step 1: Install the launcher
 
-### 1. Clone with the h3.c submodule
+The launcher is helmstudio itself — a daemon and a web UI. Either:
+
+- **the Mac app**, from [helmstudio's releases][helm-releases]. It bundles the
+  daemon, and being **unsigned**, macOS calls it damaged until you clear the
+  quarantine flag once — the release notes give the line; or
+- **a clone:**
+
+  ```bash
+  git clone https://github.com/janishar/helmstudio && cd helmstudio && make build && ./bin/helmstudio
+  ```
+
+  then open **http://127.0.0.1:8700**. Everything lives in `~/.helmstudio`.
+
+> **Not** the `helm` installer: that installs the studio author's CLI, which has
+> no library and no gallery. It is what [Path B](#path-b-run-from-a-checkout) wants.
+
+### Step 2: Install h3 studio from its library
+
+h3 studio is in helmstudio's registry, so it is already listed. Install it, and
+it shows every command it will run and every weight it will fetch first: the
+engine (`make -j8` in the submodule), the server (`go build`) and the
+checkpoint — or a link to one you have. `Ref2VA` is optional, so the install can
+be `FL2VA` alone (~62 GB), with References mode added later.
+
+### Step 3: Start it
+
+The launcher gives the studio a port, the `FL2VA` path and a data directory of
+its own, then opens its page → [Using the studio](#using-the-studio).
+
+[helmstudio]: https://github.com/janishar/helmstudio
+[helm-releases]: https://github.com/janishar/helmstudio/releases
+[helm-install]: https://helmstudio.in/docs/install-helm/
+
+## Path B: Run from a checkout
+
+The developer's path: a checkout run against helmstudio's platform API, with
+nothing installed into helmstudio. [`scripts/run.sh`](scripts/run.sh) keeps it
+short — it builds the server, links your checkpoint and starts everything under
+`helm dev`, so the engine is the only thing you build by hand.
+
+### Step 1: Install helm and the toolchain
+
+```bash
+# helm — the CLI that runs this checkout
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/janishar/helmstudio/main/installer/install.sh)"
+
+xcode-select --install; brew install go ffmpeg
+```
+
+`helm` lands in `~/.local/bin` — no `sudo`, no shell-profile edits, no
+helmstudio clone, and the installer prints the `PATH` line if that directory is
+not on it. Versions and upgrading: [Install helm][helm-install]. The launcher is
+**not** needed here; `helm dev` serves the platform API itself.
+
+### Step 2: Clone with the h3.c submodule
 
 ```bash
 git clone --recurse-submodules https://github.com/janishar/h3c-studio.git
 cd h3c-studio
-# if already cloned without --recurse-submodules:
-git submodule update --init --recursive
+# already cloned without it: git submodule update --init --recursive
 ```
 
-### 2. Build the h3 binary (h3.c)
+### Step 3: Build the engine
 
 ```bash
-cd h3c
-make -j8
-cd ..
+make -j8 -C h3c
 ```
 
-This produces `h3c/h3`. See [h3c/README.md](h3c/README.md) for the full CLI
-reference, sampler/preset tuning, and the environment variables used for
-performance diagnosis.
+This produces `h3c/h3`, which the script checks for. [h3c/README.md](h3c/README.md)
+has the CLI reference, sampler tuning and the performance env vars. The server
+needs no `go build` — the script rebuilds `dist/h3studio` every run.
 
-### 3. Download the model
+### Step 4: Get the weights
 
 ```bash
 hf download MiniMaxAI/MiniMax-H3 --local-dir /path/to/MiniMax-H3
 ```
 
-Budget ~196 GB of free disk space. You can substitute any Hugging Face
-download method (`hf` CLI, `git lfs clone`, etc.) as long as the resulting
-directory keeps the `FL2VA/` and `Ref2VA/` layout above. To download only
-~66 GB instead, see [Downloading the weights (deduplicated)](#downloading-the-weights-deduplicated)
-below before running this step.
+~196 GB, or ~66 GB via [deduplication](#downloading-the-weights-deduplicated) —
+read that first. Any method works (`hf`, `git lfs clone`, …) as long as the
+`FL2VA/` and `Ref2VA/` layout survives. Skip this if you already have a
+checkpoint: nothing is written into it.
 
-### 4. Build h3 studio
+### Step 5: Start it
 
 ```bash
-GOCACHE=$(pwd)/.gocache go build -o ./dist/h3studio .
+H3_MODEL=/path/to/MiniMax-H3 bash scripts/run.sh   # start, or restart
+bash scripts/run.sh stop
 ```
 
-The web UI is embedded in the binary, and the first build downloads
-helmstudio's runtime SDK from the Go module proxy. The binary does not start by
-itself — it wants a helmstudio to run under, which
-[Running from a checkout](#running-from-a-checkout) gives it.
+Then → [Using the studio](#using-the-studio).
+
+### What `scripts/run.sh` does
+
+1. **Checks** that `helm` is on `PATH` and `h3c/h3` is built, naming the fix.
+2. **Builds `dist/h3studio`,** every run. `helm dev` runs no build steps — the
+   checkout is yours — so it would otherwise launch whatever was there, and a
+   stale binary is the difference between the `/helm/` proxy answering and 404.
+3. **Links the checkpoint** as the `fl2va` weight when `H3_MODEL` is set, per
+   file, so nothing is downloaded and the directory is never written to.
+4. **Runs `helm dev -f helmstudio.yaml`,** which supplies the platform, a data
+   directory, and the `/helm/` proxy the page reads helm-css, the theme and this
+   studio's hue from. Extra arguments go to `helm dev`.
+
+| Variable | What it does |
+| --- | --- |
+| `H3_MODEL` | Checkpoint to link as `fl2va`. Needed on the first run only — `helm dev` records where the weight was linked. |
+| `HELM` | A particular `helm` instead of the one on `PATH`. |
+| `H3_DLV` | Port to listen for a debugger on — see [below](#debugging-and-vs-code). |
+
+Sessions and everything else the studio keeps go to `.helm/`; the script's pid
+file and debugger shim to `.cache/h3-studio` and `dist/`. All are gitignored. The
+manifest's command carries no `--dev`, so a front-end edit means re-running the
+script, not refreshing the browser.
+
+### Troubleshooting
+
+| What you see | What it means |
+| --- | --- |
+| `helm is not installed.` | Run the installer in [Step 1](#step-1-install-helm-and-the-toolchain), or set `HELM`. |
+| `h3c/h3 is not built` | [Step 3](#step-3-build-the-engine): `git submodule update --init --recursive`, then `make -j8 -C h3c`. |
+| `weights: no MiniMax-H3 checkpoint at …` | `H3_MODEL` must name the directory holding `FL2VA/` and `Ref2VA/`. |
+| `HELM_API is not set…` | The binary was started by hand. Use `bash scripts/run.sh`, or the launcher. |
+| `/helm/` assets 404 | A stale `dist/h3studio` — re-run the script. |
+| `dlv is not installed` | `go install github.com/go-delve/delve/cmd/dlv@latest` |
+
+### Debugging, and VS Code
+
+```bash
+H3_MODEL=/path/to/MiniMax-H3 H3_DLV=2345 bash scripts/run.sh
+```
+
+`helm dev` hands the studio a restricted environment and the manifest names
+`./dist/h3studio`, not a debugger — so the binary moves aside and that name
+becomes a shim running it under [Delve][dlv] on the port. It is built `-N -l` so
+stepping follows the source, and Delve gets `--continue` so the studio starts
+rather than waiting for a client. A run without `H3_DLV` builds over the shim.
+
+In VS Code there is one launch configuration, because there is one way to run
+the studio: **h3 studio** (`Cmd+Shift+D`, `F5`) runs **debug: h3 studio** —
+`scripts/run.sh` with `H3_DLV=2345` — and attaches the Go debugger; ending it
+runs **stop: h3 studio**. `.vscode/tasks.json` holds that and five more (**run**
+and **stop** without the debugger, **build: h3studio (dist)**, **test: go
+(race)**, **test: canvas.js (node)**), and the `H3_MODEL` each run uses.
+
+[dlv]: https://github.com/go-delve/delve
 
 ## Downloading the weights (deduplicated)
 
-`MiniMaxAI/MiniMax-H3` ships two variants, `Ref2VA` and `FL2VA`, which share
-everything except the transformer. Downloading both in full costs ~144 GB.
-Verified by SHA256: `video_vae`, `audio_vae`, `tokenizer`, `processor` and
-`text_encoder` are byte-identical across the two; only the transformer shards
-differ (same sizes, different hashes — a consistent sharding config, not
-shared weights).
-
-Fetching the shared components once and symlinking them brings the download
-down to **~66 GB**.
-
-### 1. Download Ref2VA in full
+`Ref2VA` and `FL2VA` share everything but the transformer: `video_vae`,
+`audio_vae`, `tokenizer`, `processor` and `text_encoder` are byte-identical by
+SHA256, and only the transformer shards differ (same sizes, different hashes — a
+consistent sharding config, not shared weights). Fetching the shared parts once
+and symlinking them costs **~66 GB** instead of ~144 GB.
 
 ```bash
-hf download MiniMaxAI/MiniMax-H3 --local-dir ./MiniMax-H3 \
-  --include "Ref2VA/*"
-```
+# 1. Ref2VA in full
+hf download MiniMaxAI/MiniMax-H3 --local-dir ./MiniMax-H3 --include "Ref2VA/*"
 
-### 2. Symlink the shared components into FL2VA
-
-```bash
-cd MiniMax-H3
-mkdir -p FL2VA
+# 2. symlink the shared components into FL2VA
+cd MiniMax-H3 && mkdir -p FL2VA
 ln -s ../Ref2VA/text_encoder FL2VA/text_encoder
 ln -s ../Ref2VA/video_vae    FL2VA/video_vae
 ln -s ../Ref2VA/audio_vae    FL2VA/audio_vae
 ln -s ../Ref2VA/tokenizer    FL2VA/tokenizer
 ln -s ../Ref2VA/processor    FL2VA/processor
 cd ..
-```
 
-### 3. Download only the FL2VA transformer
-
-```bash
+# 3. only the FL2VA transformer
 hf download MiniMaxAI/MiniMax-H3 --local-dir ./MiniMax-H3 \
-  --include "FL2VA/transformer/*" \
-  --include "FL2VA/model_index.json"
+  --include "FL2VA/transformer/*" --include "FL2VA/model_index.json"
+
+# 4. verify
+ls -la MiniMax-H3/FL2VA/     # five symlinks → ../Ref2VA/...
+du -sh MiniMax-H3            # ~66 GB
+./h3 --info -d ./MiniMax-H3  # h3.c accepts the tree
 ```
 
-### 4. Verify
+> **Notes:** `hf download` can overwrite symlinks when writing into a directory
+> that has them — if step 3 replaces them, download the transformer to a scratch
+> directory, move it into place and recreate them. The weights also need a
+> filesystem with symlinks: APFS and ext4 yes, exFAT no.
 
-```bash
-ls -la MiniMax-H3/FL2VA/          # expect five symlinks → ../Ref2VA/...
-du -sh MiniMax-H3                 # expect ~66 GB
-./h3 --info -d ./MiniMax-H3       # confirms h3.c accepts the tree
-```
+## Using the studio
 
-> **Note:** `hf download` can overwrite symlinks when writing into a directory
-> that already contains them. If step 3 replaces them, download the transformer
-> to a scratch directory and move it into place, then recreate the symlinks.
+Choose **One-shot** or **Interactive** in the render bar at the bottom of the
+left pane. Interactive h3.c starts on **Load h3.c** or the first interactive
+render, so starting the studio never loads the model. **⌘/Ctrl+Enter** renders,
+**⇧⌘/Ctrl+Enter** queues three seeds. What each panel does is
+[Features](#features); where the work is kept is
+[Sessions and state](#sessions-and-state).
 
-> **Note:** symlinks require the weights to live on a filesystem that supports
-> them. APFS and ext4 are fine; exFAT is not.
+### Command-line reference
 
-## Usage
-
-### Set up helmstudio
-
-h3 studio runs under [helmstudio][helmstudio] and does not start without it.
-Where it keeps sessions and what it records takes with both come from whatever
-launched it, and it invents neither — started by hand, it stops:
-
-```
-h3 studio runs under helmstudio. HELM_API is not set, so there is no platform to run under.
-  installed:  start it from helmstudio's Studios list
-  a checkout: bash scripts/run.sh
-```
-
-So installing it is helmstudio's job, and there is nothing to clone:
-
-1. **Install helm**, helmstudio's launcher
-   ([other ways to install it][helm-install]):
-
-   ```bash
-   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/janishar/helmstudio/main/installer/install.sh)"
-   ```
-
-2. **Install h3 studio from helmstudio's Studios list.** It reads this
-   repository's own [`helmstudio.yaml`](helmstudio.yaml) and shows you every
-   command it will run and every weight it will fetch before anything executes:
-   the h3.c engine (`make -j8` in the submodule), the studio server
-   (`go build`), and the MiniMax-H3 checkpoint — or a link to one you already
-   have. `Ref2VA` is optional there, so the install can be `FL2VA` alone
-   (~62 GB) with References mode added later.
-
-3. **Start it from helmstudio**, which gives it a port, the `FL2VA` path and a
-   data directory of its own, and opens its page.
-
-Working *on* h3 studio rather than using it means a checkout and `helm dev`
-instead — see [Running from a checkout](#running-from-a-checkout).
-
-[helmstudio]: https://github.com/janishar/helmstudio
-
-[helm-install]: https://github.com/janishar/helmstudio#getting-started
-
-### Running
-
-What helmstudio launches is the same `dist/h3studio` its build steps produced:
+You never type this — the launcher and `scripts/run.sh` both build it from
+`helmstudio.yaml`'s `processes[0].cmd` — but the flags are worth knowing:
 
 ```bash
 ./dist/h3studio --h3 ./h3c/h3 --model <FL2VA> --port <port> --root <data>
 ```
 
-That is `helmstudio.yaml`'s `processes[0].cmd` with `{port}` and `{data}`
-filled in. The paths are remembered in `<data>/sessions/h3.json` and
-`<data>/sessions/model.json`, so a later launch can omit them; a flag or
-environment variable always wins over the remembered value.
-
+The paths are remembered in `<data>/sessions/h3.json` and `model.json`, so a
+later launch can omit them; a flag or environment variable always wins.
 **There is no authentication** — see [Security](#security) before binding to
-anything other than `127.0.0.1`.
+anything but `127.0.0.1`.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--root` | *(required)* | Directory holding `sessions/` — helmstudio's data directory for this studio. The studio creates none of its own and will not start without one. |
+| `--root` | *(required)* | Directory holding `sessions/` — the data directory helmstudio gives this studio. It creates none of its own and will not start without one. |
 | `--h3` | `$H3STUDIO_H3`, else last used | Path to the built `h3` binary. |
-| `--model` | `$H3STUDIO_MODEL`, else last used | Path to the MiniMax-H3 checkpoint directory. |
-| `--host` | `127.0.0.1` | Bind address. A warning is printed for anything but loopback. |
+| `--model` | `$H3STUDIO_MODEL`, else last used | Path to the checkpoint directory. |
+| `--host` | `127.0.0.1` | Bind address; anything but loopback warns. |
 | `--port` | `8710` | Bind port; helmstudio passes the one it allocated. |
-| `--dev` | `false` | Serve `static/` from disk with `Cache-Control: no-store`. It looks where the studio was launched from, then beside the binary — not under `--root`, which holds no source. |
+| `--dev` | `false` | Serve `static/` from disk with `Cache-Control: no-store`, looked up where the studio was launched from, then beside the binary — not under `--root`, which holds no source. |
 | `--allow-shell` | `false` | Enable the `$` shell terminal and changing the h3 binary from the browser. |
-| `--allow-host` | *(none)* | Extra `Host` names to accept (comma-separated). IP addresses and `localhost` are always accepted. |
-
-Choose **One-shot** or **Interactive** in the render bar at the bottom of the
-left pane. Interactive h3.c starts when you click **Load h3.c** or send the
-first interactive render, so starting the studio itself never loads the model.
-**⌘/Ctrl+Enter** renders from anywhere; **⇧⌘/Ctrl+Enter** queues three seeds.
+| `--allow-host` | *(none)* | Extra `Host` names to accept (comma-separated); IPs and `localhost` always are. |
 
 ### What helmstudio adds
 
-h3 studio draws its own page — the same form, the same takes rail, the same
-viewer, the same terminal — and helmstudio adds four things around it:
+h3 studio draws its own page — form, takes rail, viewer, terminal — and
+helmstudio adds four things around it:
 
 | | |
 | --- | --- |
-| **Gallery** | The **Gallery** button in the top bar opens helmstudio's own grid over the takes this studio recorded, live — a take that finishes appears without a reload. The grid is scoped to this studio; helmstudio's library is where these sit beside what other studios made. |
-| **Timeline** | **Create Timeline** opens a helmstudio sequence: clips trimmed and dissolved, exported as a job it runs for you. Clips are picked from this studio's takes, though the sequence is helmstudio's and can hold any studio's. |
-| **Render log** | A third tab in the Terminal panel, streaming the render as helmstudio sees it — it reconnects after a dropped stream and tells you what it missed. The pane's **follow** and **Clear** belong to Output and are hidden while this tab is showing — helm-terminal brings its own. |
-| **The launcher** | A render appears in helmstudio as a job with its progress, so what this studio is doing is visible from outside it. |
+| **Gallery** | Opens helmstudio's own grid over this studio's takes, live: a take that finishes appears without a reload. Scoped to this studio; its library is where these sit beside other studios' work. |
+| **Timeline** | **Create Timeline** opens a helmstudio sequence — clips trimmed and dissolved, exported as a job it runs. Clips come from this studio's takes, but the sequence is helmstudio's and can hold any studio's. |
+| **Render log** | A third Terminal tab streaming the render as helmstudio sees it; it reconnects after a dropped stream and says what it missed. Output's **follow** and **Clear** hide while it shows — helm-terminal brings its own. |
+| **The launcher** | A render appears there as a job with its progress, so what this studio is doing is visible from outside it. |
 
-All of it arrives through the same-origin `/helm/` proxy the server mounts, so
-the page holds no token of helmstudio's. The theme and this studio's own colour
-come the same way, live from whatever is running it.
-
-If those components cannot be loaded while the page is opening, the page still
-works: it falls back to its vendored copy of helm-css and its own theme switch,
-the Gallery button and the Render log tab stay hidden, and **Create Timeline**
-opens h3 studio's own combine-videos editor.
-
-### Running from a checkout
-
-This is the developer's path — a checkout, run against helmstudio's platform
-API without installing anything into helmstudio. Someone *using* h3 studio
-installs it from the catalogue instead; see
-[Set up helmstudio](#set-up-helmstudio).
-
-```bash
-H3_MODEL=/path/to/MiniMax-H3 bash scripts/run.sh
-bash scripts/run.sh stop
-```
-
-The script runs the studio under `helm dev`, which is what gives it the
-platform it will not start without, a data directory to keep sessions in, and
-the `/helm/` proxy the page reads helm-css, the theme and this studio's hue
-from.
-
-`helm` comes from [helmstudio's installer][helm-install] and needs no
-helmstudio checkout; `H3_MODEL` points at a MiniMax-H3 directory you already
-have, which is linked per file rather than downloaded, so nothing is written
-into it. `HELM` names a particular helm if you do not want the one on `PATH`.
-Everything the studio keeps — sessions included — goes to `.helm/` at the top
-of the checkout, and what the script itself makes (its pid file, the debugger's
-shim) to `.cache/h3-studio` and `dist/`. All three are gitignored, so a run
-leaves the working tree as it found it.
-
-**`helm dev` runs no build steps** — the checkout is yours — so the script
-builds `dist/h3studio` first. A stale binary is the difference between the
-`/helm/` proxy answering and returning 404. The manifest's command carries no
-`--dev`, so a front-end edit means running the script again rather than
-refreshing the browser.
-
-To debug it there, set `H3_DLV` to a port:
-
-```bash
-H3_MODEL=/path/to/MiniMax-H3 H3_DLV=2345 bash scripts/run.sh
-```
-
-`helm dev` hands the studio a restricted environment, and the manifest names
-`./dist/h3studio` rather than a debugger, so the binary moves aside and that
-name becomes a shim running it under [Delve][dlv], which listens on the port.
-It is built with `-N -l` so stepping follows the source, and Delve is given
-`--continue` so the studio starts rather than waiting for a client. A run
-without `H3_DLV` builds a normal binary over the shim again.
-
-[dlv]: https://github.com/go-delve/delve
-
-### Run from VS Code
-
-There is one launch configuration, because there is one way to run the studio.
-**h3 studio** (`Cmd+Shift+D`, then `F5`) runs the **debug: h3 studio** task —
-`scripts/run.sh` with `H3_DLV=2345` — and attaches the Go extension's debugger
-to the Delve in front of the binary; ending the session runs
-**stop: h3 studio**.
-
-`.vscode/tasks.json` holds that task and five more: **run: h3 studio** and
-**stop: h3 studio** for a run without the debugger, plus **build: h3studio
-(dist)**, **test: go (race)** and **test: canvas.js (node)**. The checkpoint
-each run uses is `H3_MODEL` in that file — edit it there.
+It all arrives through the same-origin `/helm/` proxy the server mounts — as do
+the theme and this studio's colour — so the page holds no token of helmstudio's.
+If those components cannot load, the page still works: it falls back to its
+vendored helm-css and own theme switch, Gallery and Render log stay hidden, and
+**Create Timeline** opens h3 studio's own combine-videos editor.
 
 ## Features
 
 **Reference ordering is explicit.** References are numbered `Picture 1`,
-`Picture 2` in list order, and you drag to reorder. Since filenames mean
-nothing to the model and position is what it reads, getting this wrong
-silently produces the wrong shot.
+`Picture 2` in list order and you drag to reorder. Filenames mean nothing to the
+model and position is what it reads, so getting this wrong silently produces the
+wrong shot.
 
 **Three conditioning modes.** **Prompt** (text only), **Anchors** (first/last
-frame, FL2VA) and **References** (ordered Ref2VA images, clips and audio). Each
-mode keeps its own inputs, and only the active one is sent to h3. References
-are disabled with an explanation when the model has no `Ref2VA/` pipeline.
+frame, FL2VA) and **References** (ordered Ref2VA images, clips, audio). Each
+keeps its own inputs and only the active one is sent; References are disabled
+with an explanation when the model has no `Ref2VA/`.
 
-**Illegal settings are caught before launch.** The server validates every
-render — canvas on the 32-pixel grid and under 768×1344, the 5+17n frame grid,
-reference counts and durations, inputs that actually exist in the session —
-and the same errors show in the render bar as you edit. **Command** shows the
-exact argv (or REPL commands) the server will run, built by the same code that
-runs it.
+**Illegal settings are caught before launch.** The server validates every render
+— canvas on the 32-pixel grid and under 768×1344, the 5+17n frame grid,
+reference counts and durations, inputs that exist in the session — and the same
+errors show in the render bar as you edit. **Command** shows the exact argv (or
+REPL commands), built by the code that runs it.
 
-**Canvas by aspect ratio.** Pick 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3, 21:9,
-**Match input** (follows the first anchor or image reference) or Custom, then
-drag **Megapixels**; the studio solves the closest legal size and shows the
-latent size. A warning appears when an anchor's aspect would be stretched.
+**Canvas by aspect ratio.** 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, **Match
+input** (follows the first anchor or image reference) or Custom; drag
+**Megapixels** and the studio solves the closest legal size and shows the latent
+size, warning when an anchor's aspect would stretch.
 
-**One-shot and interactive rendering.** One-shot spawns a fresh `h3` process
-per render. Interactive mode keeps `h3` resident, so repeated **Send to h3.c**
-renders skip the model load and only pay for re-encoding the changed
-prompt/conditioning. You can also type commands and prompts at the `h3>`
-console; a queued studio render waits for a manual prompt to finish first, and
-each render's output is tracked in its own directory so the two never get
-mixed up.
+**One-shot and interactive rendering.** One-shot spawns a fresh `h3` per render.
+Interactive keeps it resident, so repeated **Send to h3.c** renders skip the
+model load and pay only for re-encoding what changed. You can also type at the
+`h3>` console: a queued studio render waits for a manual prompt to finish, and
+each render's output is tracked in its own directory so the two never mix.
 
-**Continue generation from any take.** Every take carries ways to feed
-itself back into the next render, so a shot can grow out of whatever you
-already generated instead of starting cold:
+**Continue generation from any take,** so a shot grows out of what you already
+generated:
 
-- **Chain →** extracts the take's last frame, switches the form to anchor
-  mode, and sets that frame as the *first* frame of the next shot (clearing
-  any existing last-frame anchor) — the fastest way to keep a sequence moving
-  forward, e.g. a stationary shot to a walking shot.
-- **Use Frame** extracts the take's last frame and adds it as a reference
-  instead of forcing a mode switch: in anchor mode it fills whichever of
-  first/last is still empty, in Reference mode it's appended as the next
-  `Picture N`. Use this when you want the frame as an Ref2VA reference
-  alongside others, not as a hard first/last anchor.
-- **Use ref** copies the take's whole output video into the session and adds
-  it as a `Video N` reference (max 3), for continuing motion/subject
-  continuity from the clip itself rather than a single frame.
-- The **⋮** menu adds **First frame → input**, **Use audio** (extracts the
-  soundtrack as an audio reference), **Previews (N)**, **Add to compare**,
-  **Download** and **Delete**.
+- **Chain →** extracts the last frame, switches to anchor mode and sets it as
+  the *first* frame of the next shot (clearing any last-frame anchor) — the
+  fastest way to keep a sequence moving.
+- **Use Frame** extracts the last frame without forcing a mode switch: in anchor
+  mode it fills whichever of first/last is empty; in Reference mode it appends
+  as the next `Picture N`.
+- **Use ref** copies the whole output video in as a `Video N` reference (max 3),
+  for motion or subject continuity from the clip itself.
+- The **⋮** menu adds **First frame → input**, **Use audio**, **Previews (N)**,
+  **Add to compare**, **Download** and **Delete**.
 
-All of these copy the source file into the session's `inputs/` directory first,
-since renders only ever read references from there — takes themselves live in
-`outputs/` and are never read back directly.
+All of these copy the source into the session's `inputs/` first, since renders
+only ever read references from there.
 
-**Timeline.** Combine multiple takes from a session into a single output
-video from the Timeline panel — pick clips, order them, and export. **Create
-Timeline** opens helmstudio's sequence editor instead (see
-[What helmstudio adds](#what-helmstudio-adds)), and this one is what that button
-falls back to when helmstudio's components cannot be loaded; the panel lists
-what it made either way. Below, two FL2VA takes from the same session are
-combined with it into one continuous shot:
+**Timeline.** Combine takes from a session into one video — pick clips, order
+them, export. **Create Timeline** opens helmstudio's sequence editor instead
+(see [What helmstudio adds](#what-helmstudio-adds)) and this is its fallback;
+the panel lists what either made. Below, two FL2VA takes from one session
+combined into a continuous shot:
 
 <table>
 <tr>
@@ -466,50 +430,45 @@ Both takes: FL2VA, one-shot mode, combined with the Timeline feature.
 </tr>
 </table>
 
-**Reproducibility.** Every render writes a `.json` sidecar next to the MP4
-with the full parameter set, the exact argv, an ffprobe summary, the profile
-and the saved previews. **Reuse** restores a past take into the form and
-**History** in the prompt block brings back earlier prompts. Nothing depends
-on you remembering what you did.
+**Reproducibility.** Every render writes a `.json` sidecar beside the MP4 with
+the full parameter set, the exact argv, an ffprobe summary, the profile and the
+saved previews. **Reuse** restores a take into the form and **History** brings
+back earlier prompts.
 
-**Queue and seed comparison.** One render at a time — one GPU. **Queue 3
-seeds** submits the same setup with three random seeds; when they finish, the
-viewer opens a synced grid of the three with a **Keep** (star) button on each.
-Any two takes can also be compared with an **A/B wipe**, and **★ starred
-only** filters the take list.
+**Queue and seed comparison.** One render at a time — one GPU. **Queue 3 seeds**
+submits the same setup with three random seeds and opens a synced grid with a
+**Keep** (star) on each; any two takes compare with an **A/B wipe**, and
+**★ starred only** filters the list.
 
-**Progress you can read.** The running card shows a Load → Encode → Denoise
-→ Decode → MP4 stepper, elapsed time and an ETA (measured per denoise step, or
-estimated from this session's earlier takes with the same settings — the same
-estimate shows in the render bar before you start). The tab title shows
-progress, and 🔔 turns on a browser notification when a render finishes.
-Failures pop up with the error and, for known problems (out of memory, the
-macOS GPU watchdog, missing ffmpeg or model files), a hint about what to do.
+**Progress you can read.** The running card shows a Load → Encode → Denoise →
+Decode → MP4 stepper, elapsed time and an ETA (measured per denoise step, or
+estimated from earlier takes with the same settings — the same estimate shows
+before you start). The tab title tracks progress and 🔔 raises a browser
+notification. Failures pop up with the error and, for known problems (OOM, the
+macOS GPU watchdog, missing ffmpeg or model files), a hint.
 
-**Live preview on disk.** With Live preview on, each decoded preview frame is
-written as a PNG under `previews/<job>/` and streamed to the viewer by URL.
-After the take finishes the previews are pruned (every frame of the last step,
-one frame of each earlier step) and **Previews (N)** scrubs through them.
+**Live preview on disk.** Each decoded preview frame is written as a PNG under
+`previews/<job>/` and streamed to the viewer by URL; afterwards they are pruned
+(every frame of the last step, one of each earlier step) and **Previews (N)**
+scrubs them.
 
 **Live profile.** The Timing tab charts `--profile` wall time per component
-across recent takes (model load separated from compute) and lists the latest
+across recent takes (model load separate from compute) and lists the latest
 render's rows.
 
 **Model check.** The **Model** button shows whether `FL2VA/` and `Ref2VA/` are
 present, whether symlinks resolve, the checkpoint size, and whether `h3`,
-`ffmpeg` and `ffprobe` run. The dot next to it turns amber or red when
-something needs attention.
+`ffmpeg` and `ffprobe` run; the dot beside it turns amber or red.
 
 **Keyboard.** ⌘/Ctrl+Enter render · ⇧⌘/Ctrl+Enter queue 3 seeds · Esc close
 dialogs · Space play/pause · ←/→ step one frame · J/K next/previous take.
 
 ## Sessions and state
 
-A session is just a directory: `sessions/<name>/`, inside the data directory
-helmstudio gives the studio as `--root`. It holds everything for one line of
-work — its inputs, its rendered outputs, and the exact UI state that produced
-them. Nothing is copied or duplicated between sessions, so switching sessions
-is instant and each one's disk footprint is only what you put in it.
+A session is a directory under the data directory helmstudio gives as `--root`.
+It holds one line of work — inputs, outputs and the UI state that produced them.
+Nothing is shared between sessions, so switching is instant and each costs only
+what you put in it.
 
 ```
 sessions/<name>/
@@ -522,125 +481,98 @@ sessions/<name>/
 └── timeline/        # combined videos, each with a .json sidecar
 ```
 
-`.thumbs/` folders next to videos hold cached poster images.
+`.thumbs/` folders beside videos hold cached posters.
 
-A finished take becomes helmstudio's too, and that changes nothing about the
-layout above. It is written to `outputs/` as it always was, and helmstudio
-adopts it by hardlink: the same bytes appear in its library under a second
-name, at the same inode, counted once, so the footprint above is still the
-whole of it. The gallery item carries the sidecar's parameters plus the session
-name as `h3_session`, because helmstudio checks session ids against its own
-sessions and h3 studio's directories are not those. The directories stay h3
-studio's own; only what a take *becomes* — an asset, a gallery item, a clip on
-a sequence — is helmstudio's.
+- **`setting.json`** is written atomically on a debounced auto-save as you edit,
+  so a session reopens exactly where you left it — prompt, canvas, quality,
+  every reference and anchor, and the mode you were in.
+- **`inputs/`** is the *only* place renders read references from. Uploads,
+  frames from **Chain →** or **Use Frame**, and takes pulled back with **Use
+  ref** all land here first, even though the take came from `outputs/`.
+- **`outputs/`** holds only what `h3` produced: the `.mp4` and its sidecar with
+  the parameters and exact argv (what **Reuse** reads). The sidecar is the only
+  record of a take — deleting the video deletes sidecar, thumbnail and previews.
+  Takes are played and timelined from here, never read into a render directly.
+- Bookkeeping sits one level up: `sessions/last_session.json` tracks the last
+  active session and is restored on start (creating `session-1` if empty). Every
+  API call names its session, so two tabs can work in different ones. New,
+  duplicate and delete are in the **⋯** menu.
 
-Deleting a take here does not undo the adoption: h3 studio removes its own
-files, but helmstudio's hardlink keeps the bytes and its gallery item stays, so
-a take you want gone entirely has to go there too.
-
-**State** — `setting.json` is written atomically on a debounced auto-save
-while you edit the form, so a session reopens exactly where you left
-it: prompt text, canvas size, quality settings, every reference and anchor,
-and which mode you were in.
-
-**Input** — `inputs/` is the *only* place renders read references from.
-Anything the model can see during a render — an uploaded image/video/audio
-file, a frame extracted with **Chain →** or **Use Frame**, or a take pulled
-back in with **Use ref** — lands here first, even though the original take it
-came from lives in `outputs/`.
-
-**Output** — `outputs/` holds only what `h3` produced: the rendered `.mp4`
-plus a matching `.json` sidecar with the full parameter set and the exact
-argv used for that take (what **Reuse** reads from). The sidecar is the only
-record of a take — deleting the video deletes its sidecar, thumbnail and
-previews too. Takes are read
-from here for playback and for the Timeline, but never read back into a
-render directly — continuing from one always goes through `inputs/` first
-(see [Continue generation from any take](#features) above).
-
-Session bookkeeping lives one level up: the last active session is tracked in
-`sessions/last_session.json` and restored when the web UI starts (creating
-`session-1` if nothing exists yet). Every API call names its session, so two
-browser tabs can work in different sessions at once. New, duplicate and delete
-live in the **⋯** menu next to the session switcher.
+A finished take becomes helmstudio's too, without changing any of the above: it
+is written to `outputs/` as always, and helmstudio adopts it **by hardlink** —
+the same bytes under a second name, same inode, counted once. The gallery item
+carries the sidecar's parameters plus the session name as `h3_session`, because
+helmstudio checks session ids against its own and these directories are not
+those. Only what a take *becomes* — an asset, a gallery item, a clip — is
+helmstudio's. Deleting a take here does not undo that: the hardlink keeps the
+bytes and the gallery item stays, so a take you want gone must go there too.
 
 ## Notes for an external drive
 
-"Copy weights into memory" is on by default and sets `H3_ZERO_COPY_WEIGHTS=0`.
-Turn it off if you move the checkpoint to internal storage — zero-copy
-mapping is the faster path on NVMe.
-
-The Qwen prefetch fields set `H3_QWEN_PREFETCH_DEPTH` and `H3_QWEN_PREFETCH`.
-Defaults assume a 128 GiB machine; raising depth can help hide slow reads.
+"Copy weights into memory" is on by default and sets `H3_ZERO_COPY_WEIGHTS=0`;
+turn it off on internal storage, where zero-copy mapping is faster. The Qwen
+prefetch fields set `H3_QWEN_PREFETCH_DEPTH` and `H3_QWEN_PREFETCH` — the
+defaults assume a 128 GiB machine, and raising depth can hide slow reads.
 
 ## Security
 
-h3 studio has no authentication, so it defends the one thing a local tool
-must: other websites and other machines driving it.
+h3 studio has no authentication, so it defends the one thing a local tool must:
+other websites and other machines driving it.
 
-- It binds to `127.0.0.1` by default and prints a warning for any other
-  address. Anyone who can reach the port can run renders.
-- Requests whose `Host` header isn't an IP address, `localhost`, the `--host`
-  name or an `--allow-host` name are refused, which blocks DNS rebinding.
-- State-changing requests must come from the studio's own origin and use a
-  JSON content type, so a page you visit can't forge them.
-- The `$` shell terminal and changing the h3 binary from the browser are off
-  unless you pass `--allow-shell`.
-- Only `H3_*` environment variables reach h3, **Extra arguments** only accepts
-  `--use-*` switches and `--ref-image-size`, and render inputs must be plain
-  file names inside the session's `inputs/`.
-- Everything the page uses of helmstudio's — helm-css, the theme stream, this
-  studio's hue, the gallery, the render log — comes through the same-origin
-  `/helm/` proxy the server mounts, so the browser never holds helmstudio's
-  token. The proxy forwards the studio API and the theme stream and nothing
-  else — a launcher path (install, launch, stop) is 404 and never reaches the
-  daemon.
+- Binds to `127.0.0.1` by default and warns for anything else. Anyone who can
+  reach the port can run renders.
+- Requests whose `Host` isn't an IP, `localhost`, the `--host` name or an
+  `--allow-host` name are refused, which blocks DNS rebinding.
+- State-changing requests must come from the studio's own origin with a JSON
+  content type, so a page you visit can't forge them.
+- The `$` shell terminal and changing the h3 binary from the browser need
+  `--allow-shell`.
+- Only `H3_*` variables reach h3, **Extra arguments** accepts only `--use-*`
+  switches and `--ref-image-size`, and render inputs must be plain file names
+  inside the session's `inputs/`.
+- Everything the page uses of helmstudio's comes through the same-origin
+  `/helm/` proxy, so the browser never holds helmstudio's token. The proxy
+  forwards the studio API and the theme stream and nothing else — a launcher
+  path (install, launch, stop) 404s and never reaches the daemon.
 
 ## Limits
 
 - One render at a time, deliberately.
-- Stop sends `SIGTERM` to h3's process group, then `SIGKILL` after 3 seconds.
-  Stopping an interactive render unloads h3.c.
-- Interactive h3.c accepts image references only; use One-shot for video or
-  audio references.
-- Extra arguments in Interactive mode apply when h3.c is loaded, not per
-  render.
-- Recording with helmstudio happens as a take finishes, and nothing is
-  reconciled afterwards: a take deleted here stays in helmstudio's gallery.
-  Combined timeline videos and preview PNGs are h3 studio's own and are not
-  adopted at all.
+- Stop sends `SIGTERM` to h3's process group, then `SIGKILL` after 3 seconds;
+  stopping an interactive render unloads h3.c.
+- Interactive h3.c accepts image references only — use One-shot for video or
+  audio references — and Extra arguments apply when it loads, not per render.
+- Recording happens as a take finishes and nothing is reconciled afterwards: a
+  take deleted here stays in helmstudio's gallery. Combined timeline videos and
+  preview PNGs are h3 studio's own and are not adopted at all.
 - `/api/queue` does not answer helmstudio's busy contract yet, so its
   switch-studio dialog reads h3 studio as unknown rather than busy or idle.
 
 ## Contributing
 
-Contributions are welcome — bug reports, feature requests, and pull requests
-alike. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; it
-covers what you need running locally, coding conventions (no Go dependencies
-beyond helmstudio's runtime SDK, no frontend build step), the test commands, and
-how issues involving the `h3.c` engine itself should be routed to
-[its own repository](https://github.com/janishar/h3.c).
+Bug reports, feature requests and pull requests are all welcome — read
+[CONTRIBUTING.md](CONTRIBUTING.md) first. It covers what you need running
+locally, the conventions (no Go dependencies beyond helmstudio's runtime SDK, no
+frontend build step), the test commands, and why engine issues belong in
+[h3.c's own repository](https://github.com/janishar/h3.c).
 
 ## License
 
-h3 studio's own source (the Go server and the static web UI) is licensed
-under the [MIT License](LICENSE), © Janishar Ali.
+h3 studio's own source — the Go server and the static web UI — is
+[MIT](LICENSE), © Janishar Ali.
 
-This repository vendors [h3.c](https://github.com/janishar/h3.c) as the `h3c`
-git submodule rather than embedding a copy of its source. `h3c` is separately
-MIT-licensed (© Salvatore Sanfilippo — see [`h3c/LICENSE`](h3c/LICENSE)) and
-carries an additional BSD-3-Clause notice for shader code adapted from a
-third-party project (see [`h3c/THIRD_PARTY_NOTICES.md`](h3c/THIRD_PARTY_NOTICES.md)).
-Both notices must be preserved if you redistribute `h3c` itself.
+h3.c is vendored as a git submodule rather than copied in. It is separately
+MIT-licensed (© Salvatore Sanfilippo, [`h3c/LICENSE`](h3c/LICENSE)) and carries
+an additional BSD-3-Clause notice for adapted shader code
+([`h3c/THIRD_PARTY_NOTICES.md`](h3c/THIRD_PARTY_NOTICES.md)); both must be
+preserved if you redistribute `h3c` itself.
 
-The MiniMax-H3 model weights are **not** part of this repository and are
-distributed separately by MiniMaxAI under their own license — review
-[the model card on Hugging Face](https://huggingface.co/MiniMaxAI/MiniMax-H3)
-before use.
+The MiniMax-H3 weights are **not** part of this repository and are distributed
+by MiniMaxAI under their own license — review
+[the model card](https://huggingface.co/MiniMaxAI/MiniMax-H3) before use.
 
 ## Acknowledgments
 
-- [Salvatore Sanfilippo](https://github.com/janishar/h3.c) for h3.c, the
-  native Metal inference engine this project is a control surface for.
-- [MiniMaxAI](https://huggingface.co/MiniMaxAI/MiniMax-H3) for the MiniMax-H3
-  model.
+- [Salvatore Sanfilippo](https://github.com/janishar/h3.c) for h3.c, the native
+  Metal engine this is a control surface for.
+- [MiniMaxAI](https://huggingface.co/MiniMaxAI/MiniMax-H3) for MiniMax-H3.
