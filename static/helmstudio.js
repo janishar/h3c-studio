@@ -124,16 +124,18 @@ const SEQUENCE_RATES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60];
  */
 function timelineDialog(picker) {
   const title = el("h2", { class: "helmstudio-title", text: "Timeline" });
-  const which = el("select", { class: "helmstudio-select", hidden: true });
   const status = el("span", { class: "helmstudio-status", role: "status" });
   const fresh = el("button", { class: "pathbutton", type: "button", text: "New sequence" });
   const close = el("button", { class: "pathbutton", type: "button", text: "Close" });
   const empty = el("p", { class: "helmstudio-empty", text: "No sequence yet. New sequence starts one from a take." });
   const head = el("div", { class: "helmstudio-head" },
-    title, which, status, el("span", { class: "helmstudio-spacer" }), fresh, close);
+    title, status, el("span", { class: "helmstudio-spacer" }), fresh, close);
   const body = el("div", { class: "helmstudio-body" }, empty);
   const d = helmDialog("helmstudio-timeline", head, body);
-  const tl = mountComponent(body, "<helm-timeline editable hidden></helm-timeline>");
+  // `chooser` is the editor's own list of the sequences this studio may read
+  // (04 §11, amended 2026-09-19). It replaces the <select> this dialog used to
+  // keep beside it, and picking one is the component's business now.
+  const tl = mountComponent(body, "<helm-timeline chooser editable hidden></helm-timeline>");
   const say = (text) => { status.textContent = text; };
 
   // A clip is a bare asset id to the component; this is the only place that
@@ -152,26 +154,20 @@ function timelineDialog(picker) {
   }
   tl.labelFor = (clip) => labels.get(clip.asset_id) || "";
 
+  // What is left here is what the component cannot know: which take made a
+  // clip. The editor finds the sequences and opens one; naming a sequence is
+  // only asking it to open that one instead of the first.
   async function load(selectId) {
     const page = await window.helm.timeline.list({ limit: 50 });
     const sequences = page.items || [];
     empty.hidden = sequences.length > 0;
     tl.hidden = sequences.length === 0;
-    which.hidden = sequences.length === 0;
-    which.replaceChildren(...sequences.map((s) => new Option(`${s.name} · r${s.revision}`, s.id)));
-    const chosen = sequences.find((s) => s.id === selectId) || sequences[0];
-    if (!chosen) return;
-    which.value = chosen.id;
+    if (!sequences.length) return;
     await learnLabels().catch(() => {});
+    const chosen = sequences.find((s) => s.id === selectId) || sequences[0];
     if (tl.getAttribute("timeline") !== chosen.id) tl.setAttribute("timeline", chosen.id);
   }
 
-  which.addEventListener("change", () => tl.setAttribute("timeline", which.value));
-  tl.addEventListener("changed", (event) => {
-    const t = event.detail.timeline;
-    const option = [...which.options].find((o) => o.value === t.id);
-    if (option) option.textContent = `${t.name} · r${t.revision}`;
-  });
   tl.addEventListener("exported", () => say("Exported — the sequence is in the gallery."));
 
   // What goes on a sequence is this page's to choose: the editor asks, and
@@ -206,11 +202,12 @@ function timelineDialog(picker) {
   close.addEventListener("click", () => d.close());
 
   return {
-    async open() {
+    /** open shows the editor, on `selectId` when one is named. */
+    async open(selectId) {
       d.showModal();
       say("");
       try {
-        await load(which.value);
+        await load(selectId);
       } catch (err) {
         empty.hidden = false;
         empty.textContent = `The sequences could not be read: ${err.message}`;
@@ -254,6 +251,14 @@ async function connectHelmstudio() {
   const timeline = timelineDialog(gallery);
   const timelineButton = $("timelineButton");
   if (timelineButton) timelineButton.onclick = () => timeline.open();
+
+  // The TIMELINE panel lists helmstudio's sequences and knows nothing about
+  // this dialog; it says which one was asked for, and this decides what that
+  // means. With nothing behind the proxy nothing listens, and nothing lists a
+  // sequence to ask about either.
+  document.addEventListener("h3:open-sequence", (event) => {
+    timeline.open(event.detail && event.detail.id);
+  });
   return true;
 }
 
