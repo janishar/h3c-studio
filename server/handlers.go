@@ -37,7 +37,11 @@ func NewApp(cfg *Config, runner *Runner, events *Broker) *App {
 // ServeHTTP applies the request guard before routing.
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if status, msg := a.guard(r); status != 0 {
-		writeJSON(w, status, map[string]any{"error": msg})
+		// "message" as well as "error": a refusal on the /helm/ proxy is read
+		// by helmstudio's SDK, which takes "error" for a code and shows
+		// "message". With only "error" it has nothing to say and its caller
+		// falls back to "that change was not made".
+		writeJSON(w, status, map[string]any{"error": msg, "message": msg})
 		return
 	}
 	a.mux.ServeHTTP(w, r)
@@ -68,6 +72,15 @@ func (a *App) guard(r *http.Request) (int, string) {
 		return 0, ""
 	}
 	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	// helmstudio's SDK writes in the content types its API declares, which are
+	// not all application/json: a PATCH is a merge patch, and a write with no
+	// body (:cancel, DELETE) sends no content type at all. Both still force the
+	// CORS preflight this check is here for — no cross-site form can send a
+	// +json body, and none can send no content type — so the proxy takes them.
+	if strings.HasPrefix(r.URL.Path, helm.ProxyPrefix) &&
+		(strings.HasSuffix(mediaType, "+json") || (mediaType == "" && r.ContentLength == 0)) {
+		return 0, ""
+	}
 	if mediaType != "application/json" {
 		return http.StatusUnsupportedMediaType, "Content-Type must be application/json"
 	}

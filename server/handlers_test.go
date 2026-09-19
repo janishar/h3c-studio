@@ -83,6 +83,64 @@ func TestGuardRejectsCrossSiteAndRebinding(t *testing.T) {
 	}
 }
 
+// The guard sits in front of the /helm/ proxy too, and helmstudio's SDK does
+// not write in application/json alone: a sequence edit is a merge patch, and
+// :cancel and DELETE carry no body and no content type. Refusing those is what
+// made Remove in the timeline editor fail with no reason given.
+func TestGuardLetsTheHelmProxyKeepItsContentTypes(t *testing.T) {
+	app, _ := newTestApp(t, true)
+	same := "http://127.0.0.1:8710"
+	cases := []struct {
+		name, method, path, body string
+		headers                  map[string]string
+	}{
+		{"merge patch", http.MethodPatch, "/helm/api/v1/timeline/abc", `{"tracks":[]}`,
+			map[string]string{"Content-Type": "application/merge-patch+json", "Origin": same}},
+		{"bodyless cancel", http.MethodPost, "/helm/api/v1/jobs/abc:cancel", "",
+			map[string]string{"Origin": same}},
+		{"bodyless delete", http.MethodDelete, "/helm/api/v1/gallery/items/abc", "",
+			map[string]string{"Origin": same}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Nothing is behind the proxy here, so the proxy's own 404 is the
+			// pass: the guard forwarded rather than refusing.
+			if rec := do(app, tc.method, tc.path, tc.body, tc.headers); rec.Code == http.StatusUnsupportedMediaType {
+				t.Fatalf("the guard refused the content type: %s", rec.Body.String())
+			}
+		})
+	}
+	// The relaxation is the proxy's alone, and it is not a way past the origin
+	// check or into the studio's own API.
+	if rec := do(app, http.MethodPost, "/api/shell", `{"session":"s1","command":"x"}`,
+		map[string]string{"Content-Type": "application/merge-patch+json"}); rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("a merge patch reached the studio's own API: %d", rec.Code)
+	}
+	if rec := do(app, http.MethodPatch, "/helm/api/v1/timeline/abc", `{"tracks":[]}`,
+		map[string]string{"Content-Type": "application/merge-patch+json", "Origin": "https://evil.example"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("a cross-origin merge patch was forwarded: %d", rec.Code)
+	}
+	if rec := do(app, http.MethodPost, "/helm/api/v1/jobs/abc:cancel", "",
+		map[string]string{"Sec-Fetch-Site": "cross-site"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("a cross-site bodyless write was forwarded: %d", rec.Code)
+	}
+}
+
+// A refusal says what it is in "message" as well as "error": helmstudio's SDK
+// reads "error" as a code and shows "message", so with only "error" a studio
+// component has nothing to show.
+func TestAGuardRefusalCarriesAMessage(t *testing.T) {
+	app, _ := newTestApp(t, true)
+	rec := do(app, http.MethodPost, "/api/shell", `{}`, map[string]string{"Content-Type": "text/plain"})
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["message"] == nil || got["message"] != got["error"] {
+		t.Fatalf("message = %v, error = %v", got["message"], got["error"])
+	}
+}
+
 func TestShellDisabledByDefault(t *testing.T) {
 	app, _ := newTestApp(t, false)
 	rec := do(app, http.MethodPost, "/api/shell", `{"session":"s1","command":"echo hi"}`, jsonHeaders)
