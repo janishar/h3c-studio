@@ -123,19 +123,19 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
             <select id="aspectSelect" aria-label="Aspect ratio"></select>
           </label>
           <label class="resolution-stat">Megapixels
-            <input type="range" id="megapixels" min="0.1" max="1.03" step="0.01" value="0.26">
-            <output id="megapixelsValue">0.26 MP</output>
+            <input type="range" id="megapixels" min="0.1" max="1.03" step="0.01" value="0.4">
+            <output id="megapixelsValue">0.40 MP</output>
           </label>
         </div>
         <div class="canvas-readout">
-          <span><b id="resolvedDimensions">512 × 512</b> resolved</span>
-          <span><b id="actualMegapixels">0.26 MP</b> actual</span>
-          <span><b id="actualRatio">1.000</b> ratio</span>
-          <span><b id="latentSize">32 × 32</b> latent · ×32 grid</span>
+          <span><b id="resolvedDimensions">800 × 448</b> resolved</span>
+          <span><b id="actualMegapixels">0.36 MP</b> actual</span>
+          <span><b id="actualRatio">1.786</b> ratio</span>
+          <span><b id="latentSize">50 × 28</b> latent · ×32 grid</span>
         </div>
         <div class="fields">
-          <label>Width<input type="number" id="width" step="32" min="32" value="512"></label>
-          <label>Height<input type="number" id="height" step="32" min="32" value="512"></label>
+          <label>Width<input type="number" id="width" step="32" min="32" value="800"></label>
+          <label>Height<input type="number" id="height" step="32" min="32" value="448"></label>
         </div>
         <div class="fields">
           <label>Internal render<select id="internal">
@@ -155,14 +155,14 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
       <div class="block">
         <div class="blockhead"><h2>Duration</h2><span class="fpsbadge">24 FPS</span></div>
         <div class="duration-slider">
-          <input type="range" id="frames" min="0" max="21" value="1" aria-label="Duration">
+          <input type="range" id="frames" min="0" max="21" value="7" aria-label="Duration">
           <div class="duration-markers" aria-hidden="true">
             <span style="left: 33.333%">5</span>
             <span style="left: 66.667%">10</span>
             <span style="left: 100%">15</span>
           </div>
         </div>
-        <div class="readout"><b id="frameCount">22</b> frames<span id="frameSecs">0.92 s</span></div>
+        <div class="readout"><b id="frameCount">124</b> frames<span id="frameSecs">5.17 s</span></div>
         <p class="hint">H3 converts requests to its legal frame grid: 5 + 17n.</p>
       </div>
 
@@ -170,7 +170,7 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
         <h2>Quality</h2>
         <div class="chips" id="qualityPresets"></div>
         <div class="fields three">
-          <label>Steps<input type="number" id="steps" min="2" max="1000" value="4"></label>
+          <label>Steps<input type="number" id="steps" min="2" max="1000" value="6"></label>
           <label>Layers<input type="number" id="layers" min="35" max="50" value="50"></label>
           <label>Reuse<input type="number" id="reuse" min="1" max="3" value="1"></label>
         </div>
@@ -180,7 +180,7 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
 
       <details class="block">
         <summary><h2>Environment</h2></summary>
-        <label class="check"><input type="checkbox" id="zeroCopy" checked> Copy weights into memory<em>set this when the model lives on an external drive</em></label>
+        <label class="check"><input type="checkbox" id="zeroCopy"> Copy weights into memory<em>set this when the model lives on an external drive</em></label>
         <label class="check"><input type="checkbox" id="ssdStreaming"> Stream DiT from disk<em>cuts memory, much slower over USB</em></label>
         <div class="fields">
           <label>Qwen prefetch depth<input type="number" id="prefetchDepth" min="1" max="6" placeholder="default"></label>
@@ -194,7 +194,7 @@ import("/helm/sdk/v1/helm-runtime.js").then((helm) => helm.themeBridge()).catch(
 
       <div class="block">
         <label class="labelfield">Take name<input type="text" id="label" placeholder="shot-01" autocomplete="off"></label>
-        <label class="check"><input type="checkbox" id="previewToggle" checked> Live preview<em>decode &amp; display frames during render — slower</em></label>
+        <label class="check"><input type="checkbox" id="previewToggle"> Live preview<em>decode &amp; display frames during render — slower</em></label>
         <div class="radio-group" id="previewModeGroup">
           <label class="check"><input type="radio" name="previewMode" id="previewModeSingle" value="single" checked> Single frame<em>middle frame of the middle chunk</em></label>
           <label class="check"><input type="radio" name="previewMode" id="previewModeAll" value="all"> All frames in chunk<em>One-shot only · reveals motion at no extra decode cost</em></label>

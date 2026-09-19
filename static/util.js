@@ -27,7 +27,7 @@ const state = {
   interactive: { loaded: false },
   promptDoc: [{ type: "text", value: "" }],
   mention: null,
-  canvas: { aspect: "1:1", customRatio: 1 },
+  canvas: { aspect: "16:9", customRatio: 16 / 9 },
   followPreview: true,
   livePreview: null,
   scrub: null,
