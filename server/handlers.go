@@ -339,8 +339,14 @@ func (a *App) takes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.cfg.ListTakes(a.sessionOrLast(sessionParam(r)), 200))
 }
 
+// timeline is what the TIMELINE panel lists: this session's combined videos,
+// and the sequences helmstudio holds for this studio. They are two different
+// things under one word — a file h3 rendered here, and an edit the platform
+// keeps — so each carries its source and the panel offers each only the
+// actions that can work on it.
 func (a *App) timeline(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.cfg.ListTimeline(a.sessionOrLast(sessionParam(r))))
+	items := a.cfg.ListTimeline(a.sessionOrLast(sessionParam(r)))
+	writeJSON(w, http.StatusOK, append(items, a.cfg.Platform.Sequences(r.Context())...))
 }
 
 func (a *App) timelineBrowse(w http.ResponseWriter, r *http.Request) {

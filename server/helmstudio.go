@@ -316,3 +316,51 @@ func truncate(s string, n int) string {
 	}
 	return s[:n]
 }
+
+// Sequences are the timelines helmstudio holds for this studio, newest first.
+//
+// `GET /timeline` answers with the caller's own sequences, and with every
+// studio's only for a caller holding gallery.read_all — which h3 does not ask
+// for. So what comes back is exactly "the timelines that belong to this
+// studio", which is what the panel wants to show.
+//
+// A sequence is not a file. It is an edit — tracks and clips — that helmstudio
+// keeps, and exporting one is a separate job that produces an asset. So these
+// carry no URL and no thumbnail, and the panel offers none of the actions that
+// need a file on this disk.
+//
+// No platform means no sequences, which is the same answer the panel reads as
+// "none": h3 run standalone shows its own combined videos and nothing else.
+func (p *Platform) Sequences(ctx context.Context) []MediaItem {
+	if !p.Available() {
+		return nil
+	}
+	page, err := p.client.Timeline.List(ctx, nil)
+	if err != nil {
+		log.Printf("helmstudio: listing sequences: %v", err)
+		return nil
+	}
+	items := make([]MediaItem, 0, len(page.Items))
+	for _, t := range page.Items {
+		duration := t.DurationS
+		clips := make([]string, 0)
+		for _, track := range t.Tracks {
+			for _, c := range track.Clips {
+				clips = append(clips, c.AssetID)
+			}
+		}
+		items = append(items, MediaItem{
+			Name:     t.Name,
+			Kind:     "timeline",
+			Mtime:    float64(t.UpdatedAt.UnixNano()) / 1e9,
+			Duration: &duration,
+			Meta: map[string]any{
+				"source":      "helmstudio",
+				"timeline_id": t.ID,
+				"clips":       clips,
+				"duration_s":  duration,
+			},
+		})
+	}
+	return items
+}

@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -209,5 +212,57 @@ func TestProgressIsRecordedNotSent(t *testing.T) {
 	task.mu.Unlock()
 	if after[0] != 50 {
 		t.Errorf("progress moved to %v after the task closed", after)
+	}
+}
+
+// The TIMELINE panel lists the sequences helmstudio holds for this studio.
+// They are edits the platform keeps, not files in this session, so they carry
+// no URL and no thumbnail and the panel must be able to tell them apart.
+func TestSequencesListsWhatHelmstudioHoldsForThisStudio(t *testing.T) {
+	var asked string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"next_cursor":null,"items":[
+			{"id":"01TL","name":"h3 sequence 9/19/2025","revision":1,"duration_s":12.5,"etag":"\"1\"",
+			 "studio_id":"h3-studio","created_at":"2026-09-19T18:00:00Z","updated_at":"2026-09-19T18:04:00Z",
+			 "target":{"width":800,"height":448,"fps":24,"sample_rate":48000},
+			 "tracks":[{"kind":"video","name":"V1","clips":[{"asset_id":"A1"},{"asset_id":"A2"}]}]}]}`)
+	}))
+	defer srv.Close()
+
+	p := &Platform{client: helm.NewRemote(srv.URL, "a-token")}
+	items := p.Sequences(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("got %d sequences, want 1 (asked %s)", len(items), asked)
+	}
+	it := items[0]
+	if it.Name != "h3 sequence 9/19/2025" || it.Kind != "timeline" {
+		t.Errorf("sequence decoded as %+v", it)
+	}
+	if it.URL != "" || it.Thumb != "" {
+		t.Errorf("a sequence is not a file here, so it carries no url or thumb: %+v", it)
+	}
+	if it.Meta["source"] != "helmstudio" {
+		t.Errorf("the panel cannot tell it apart: meta = %+v", it.Meta)
+	}
+	if clips, ok := it.Meta["clips"].([]string); !ok || len(clips) != 2 {
+		t.Errorf("clips = %+v, want the two the sequence names", it.Meta["clips"])
+	}
+	if it.Duration == nil || *it.Duration != 12.5 {
+		t.Errorf("duration = %+v, want 12.5", it.Duration)
+	}
+}
+
+// No platform is the same answer as no sequences: h3 standalone lists its own
+// combined videos and nothing else, and never panics reaching for a daemon
+// that is not there.
+func TestSequencesWithoutAPlatformAreNone(t *testing.T) {
+	var nilPlatform *Platform
+	if got := nilPlatform.Sequences(context.Background()); got != nil {
+		t.Errorf("a nil Platform listed %d sequences", len(got))
+	}
+	if got := (&Platform{}).Sequences(context.Background()); got != nil {
+		t.Errorf("a Platform with no client listed %d sequences", len(got))
 	}
 }

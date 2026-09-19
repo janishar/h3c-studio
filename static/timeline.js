@@ -10,13 +10,20 @@ async function loadTimeline() {
   renderTimelineList();
 }
 
+/** A sequence helmstudio keeps, rather than a video this session rendered. */
+function isSequence(item) {
+  return item.meta?.source === "helmstudio";
+}
+
 function timelineMeta(item) {
   const bits = [];
   const clips = item.meta?.clips?.length;
   if (clips) bits.push(`${clips} clip${clips === 1 ? "" : "s"}`);
   if (item.probe?.width) bits.push(`${item.probe.width}×${item.probe.height}`);
-  if (item.probe?.duration) bits.push(`${item.probe.duration.toFixed(1)}s`);
-  return bits.join(" · ") || "combined";
+  const seconds = item.probe?.duration ?? (isSequence(item) ? item.meta?.duration_s : null);
+  if (seconds) bits.push(`${seconds.toFixed(1)}s`);
+  if (isSequence(item)) bits.push("in helmstudio");
+  return bits.join(" · ") || (isSequence(item) ? "in helmstudio" : "combined");
 }
 
 function renderTimelineList() {
@@ -25,19 +32,29 @@ function renderTimelineList() {
     $("timelineList").replaceChildren(el("li", { class: "list-empty", text: "No combined videos yet. Use Create Timeline above to build one." }));
     return;
   }
-  $("timelineList").replaceChildren(...state.timeline.map((item) => el("li", {
-    class: item.name === state.selectedTimeline ? "on" : "",
-    onclick: () => selectTimeline(item.name),
-  },
-    el("div", { class: "row" },
-      el("div", { class: "thumb" }, el("img", { src: item.thumb, alt: "", loading: "lazy" })),
-      el("div", { class: "info" },
-        el("div", { class: "nm", text: item.name, title: item.name }),
-        el("div", { class: "meta", text: timelineMeta(item) }))),
-    el("div", { class: "ops" },
-      takeButton("Use video", "Copy into inputs and add as a video reference", () => useVideoRef(item, "timeline")),
-      takeButton("Last frame", "Extract the last frame into inputs", () => useFrame(item, "last", "timeline")),
-      takeButton("Delete", "Delete this combined video", () => deleteMedia(item.name, "timeline"))))));
+  $("timelineList").replaceChildren(...state.timeline.map((item) => {
+    // A sequence has no file here: it is an edit helmstudio keeps, and
+    // exporting one is its own job. So it is not selectable into the combine
+    // editor, has no thumbnail to show, and is offered none of the three
+    // actions below, every one of which reads or deletes a file in this
+    // session.
+    const sequence = isSequence(item);
+    return el("li", {
+      class: !sequence && item.name === state.selectedTimeline ? "on" : "",
+      onclick: sequence ? null : () => selectTimeline(item.name),
+    },
+      el("div", { class: "row" },
+        el("div", { class: "thumb" }, item.thumb ? el("img", { src: item.thumb, alt: "", loading: "lazy" }) : null),
+        el("div", { class: "info" },
+          el("div", { class: "nm", text: item.name, title: item.name }),
+          el("div", { class: "meta", text: timelineMeta(item) }))),
+      sequence
+        ? null
+        : el("div", { class: "ops" },
+          takeButton("Use video", "Copy into inputs and add as a video reference", () => useVideoRef(item, "timeline")),
+          takeButton("Last frame", "Extract the last frame into inputs", () => useFrame(item, "last", "timeline")),
+          takeButton("Delete", "Delete this combined video", () => deleteMedia(item.name, "timeline"))));
+  }));
 }
 
 function selectTimeline(name) {
