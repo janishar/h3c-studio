@@ -11,7 +11,7 @@
 # module proxy, so neither needs a helmstudio checkout. What the script makes
 # itself (the debugger's shim, its pid file) stays in .cache/h3-studio and
 # dist/, beside the .helm helm dev keeps. What each variable does: README.md,
-# "Running under helmstudio".
+# "What scripts/run.sh does".
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
