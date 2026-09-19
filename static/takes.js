@@ -36,6 +36,7 @@ function setCaption(text) {
 function showVideo(url, caption = "", autoplay = true) {
   closeCompare();
   hidePreview();
+  stopSequence();
   const player = $("player");
   player.pause();
   if (!url) {
@@ -363,6 +364,7 @@ function openCompareGrid(names = state.compare) {
   const takes = names.map((name) => state.takes.find((t) => t.name === name)).filter(Boolean);
   if (takes.length < 2) return;
   hidePreview();
+  stopSequence();
   $("player").pause();
   $("player").classList.remove("on");
   $("viewerEmpty").hidden = true;
@@ -400,6 +402,7 @@ function openWipe(names = state.compare) {
   const takes = names.map((name) => state.takes.find((t) => t.name === name)).filter(Boolean);
   if (takes.length !== 2) return;
   hidePreview();
+  stopSequence();
   $("player").pause();
   $("player").classList.remove("on");
   $("viewerEmpty").hidden = true;

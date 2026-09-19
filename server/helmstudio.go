@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -325,9 +326,11 @@ func truncate(s string, n int) string {
 // studio", which is what the panel wants to show.
 //
 // A sequence is not a file. It is an edit — tracks and clips — that helmstudio
-// keeps, and exporting one is a separate job that produces an asset. So these
-// carry no URL and no thumbnail, and the panel offers none of the actions that
-// need a file on this disk.
+// keeps, and exporting one is a separate job that produces an asset. So a
+// sequence carries no URL of its own and the panel offers none of the actions
+// that need a file on this disk; what it carries instead is its clips, each
+// with the path to its asset's bytes, so the viewer can play the edit as it
+// stands without waiting on an export.
 //
 // No platform means no sequences, which is the same answer the panel reads as
 // "none": h3 run standalone shows its own combined videos and nothing else.
@@ -343,13 +346,8 @@ func (p *Platform) Sequences(ctx context.Context) []MediaItem {
 	items := make([]MediaItem, 0, len(page.Items))
 	for _, t := range page.Items {
 		duration := t.DurationS
-		clips := make([]string, 0)
-		for _, track := range t.Tracks {
-			for _, c := range track.Clips {
-				clips = append(clips, c.AssetID)
-			}
-		}
-		items = append(items, MediaItem{
+		clips := sequenceClipsOf(t)
+		item := MediaItem{
 			Name:     t.Name,
 			Kind:     "timeline",
 			Mtime:    float64(t.UpdatedAt.UnixNano()) / 1e9,
@@ -360,7 +358,46 @@ func (p *Platform) Sequences(ctx context.Context) []MediaItem {
 				"clips":       clips,
 				"duration_s":  duration,
 			},
-		})
+		}
+		if len(clips) > 0 {
+			item.Thumb = assetPath(clips[0].AssetID) + "/thumb?w=320"
+		}
+		items = append(items, item)
 	}
 	return items
+}
+
+// SequenceClip is one clip of a sequence as the page plays it: where the
+// asset's bytes are, and the part of them this clip uses.
+type SequenceClip struct {
+	AssetID string   `json:"asset_id"`
+	URL     string   `json:"url"`
+	In      *float64 `json:"in,omitempty"`
+	Out     *float64 `json:"out,omitempty"`
+}
+
+// sequenceClipsOf is the sequence's picture, in order: V1's clips, which the
+// framework keeps contiguous from 0. The audio tracks are left out because
+// this plays each clip's own sound with it, and a page cannot mix tracks — an
+// export is what to play when the whole edit has to be heard as it was cut.
+func sequenceClipsOf(t helm.Timeline) []SequenceClip {
+	clips := make([]SequenceClip, 0)
+	for _, track := range t.Tracks {
+		if track.Kind != "video" {
+			continue
+		}
+		for _, c := range track.Clips {
+			clips = append(clips, SequenceClip{AssetID: c.AssetID, URL: assetPath(c.AssetID), In: c.In, Out: c.Out})
+		}
+		break // V1 is the one video track (05 §6).
+	}
+	return clips
+}
+
+// assetPath is where the page reads an asset's bytes: this studio's own
+// /helm/ proxy, which adds the token the page never holds and passes Range
+// through, so the viewer can seek. It is a path on this server, not a URL to
+// helmstudio.
+func assetPath(id string) string {
+	return helm.ProxyPrefix + "api/v1/assets/" + url.PathEscape(id)
 }

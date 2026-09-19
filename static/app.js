@@ -602,7 +602,7 @@ function onJobEvent(job) {
   }
   if (["done", "failed", "cancelled"].includes(job.state) && job.session === state.session) {
     resetPreviewQueue();
-    if (job.state !== "done" && state.followPreview && !state.selected) showVideo(null);
+    if (job.state !== "done" && state.followPreview && !state.selected && !state.selectedSequence) showVideo(null);
   }
 }
 
@@ -801,7 +801,7 @@ function connect() {
         }
         break;
       case "takes":
-        if (mine) loadTakes(state.followPreview || !state.selected ? payload.name : null).catch(() => {});
+        if (mine) loadTakes(state.followPreview || !(state.selected || state.selectedSequence) ? payload.name : null).catch(() => {});
         break;
       case "inputs":
         if (mine) loadInputs().catch(() => {});

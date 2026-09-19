@@ -22,6 +22,7 @@ const state = {
   timeline: [],
   selected: null,
   selectedTimeline: null,
+  selectedSequence: null,  // the helmstudio sequence the viewer is playing
   queue: [],
   runningId: null,
   interactive: { loaded: false },

@@ -216,8 +216,9 @@ func TestProgressIsRecordedNotSent(t *testing.T) {
 }
 
 // The TIMELINE panel lists the sequences helmstudio holds for this studio.
-// They are edits the platform keeps, not files in this session, so they carry
-// no URL and no thumbnail and the panel must be able to tell them apart.
+// They are edits the platform keeps, not files in this session, so the panel
+// must be able to tell them apart, and each carries the clips the viewer
+// plays in place of a file of its own.
 func TestSequencesListsWhatHelmstudioHoldsForThisStudio(t *testing.T) {
 	var asked string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +228,9 @@ func TestSequencesListsWhatHelmstudioHoldsForThisStudio(t *testing.T) {
 			{"id":"01TL","name":"h3 sequence 9/19/2025","revision":1,"duration_s":12.5,"etag":"\"1\"",
 			 "studio_id":"h3-studio","created_at":"2026-09-19T18:00:00Z","updated_at":"2026-09-19T18:04:00Z",
 			 "target":{"width":800,"height":448,"fps":24,"sample_rate":48000},
-			 "tracks":[{"kind":"video","name":"V1","clips":[{"asset_id":"A1"},{"asset_id":"A2"}]}]}]}`)
+			 "tracks":[
+			   {"kind":"video","name":"V1","clips":[{"asset_id":"A1"},{"asset_id":"A 2","in":1.5,"out":4}]},
+			   {"kind":"audio","name":"A1","clips":[{"asset_id":"MUSIC"}]}]}]}`)
 	}))
 	defer srv.Close()
 
@@ -240,14 +243,31 @@ func TestSequencesListsWhatHelmstudioHoldsForThisStudio(t *testing.T) {
 	if it.Name != "h3 sequence 9/19/2025" || it.Kind != "timeline" {
 		t.Errorf("sequence decoded as %+v", it)
 	}
-	if it.URL != "" || it.Thumb != "" {
-		t.Errorf("a sequence is not a file here, so it carries no url or thumb: %+v", it)
+	if it.URL != "" {
+		t.Errorf("a sequence is not a file here, so it carries no url of its own: %q", it.URL)
 	}
 	if it.Meta["source"] != "helmstudio" {
 		t.Errorf("the panel cannot tell it apart: meta = %+v", it.Meta)
 	}
-	if clips, ok := it.Meta["clips"].([]string); !ok || len(clips) != 2 {
-		t.Errorf("clips = %+v, want the two the sequence names", it.Meta["clips"])
+	clips, ok := it.Meta["clips"].([]SequenceClip)
+	if !ok || len(clips) != 2 {
+		t.Fatalf("clips = %+v, want V1's two and no audio track's", it.Meta["clips"])
+	}
+	// Each clip plays through this studio's own proxy, which holds the token
+	// the page does not. An id is escaped into the path, or an asset named
+	// with a space is a request for something else.
+	if clips[0].URL != "/helm/api/v1/assets/A1" || clips[1].URL != "/helm/api/v1/assets/A%202" {
+		t.Errorf("clip urls are %q and %q", clips[0].URL, clips[1].URL)
+	}
+	if clips[0].In != nil || clips[0].Out != nil {
+		t.Errorf("a clip with no in or out sent %v and %v, want neither", clips[0].In, clips[0].Out)
+	}
+	if clips[1].In == nil || *clips[1].In != 1.5 || clips[1].Out == nil || *clips[1].Out != 4 {
+		t.Errorf("the trimmed clip runs %v to %v, want 1.5 to 4", clips[1].In, clips[1].Out)
+	}
+	// The row's picture is the first clip's, since the edit itself has none.
+	if it.Thumb != "/helm/api/v1/assets/A1/thumb?w=320" {
+		t.Errorf("sequence thumb is %q", it.Thumb)
 	}
 	if it.Duration == nil || *it.Duration != 12.5 {
 		t.Errorf("duration = %+v, want 12.5", it.Duration)

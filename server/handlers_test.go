@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	helm "github.com/janishar/helmstudio/packages/helm-runtime-sdk/go"
 )
 
 func newTestApp(t *testing.T, allowShell bool) (*App, *Config) {
@@ -241,5 +244,63 @@ func TestUploadSanitizesName(t *testing.T) {
 	}
 	if rec := do(app, http.MethodPost, "/api/upload?session=s1", "x", map[string]string{"X-Filename": "run.sh"}); rec.Code == http.StatusOK {
 		t.Fatal("accepted an unsupported file type")
+	}
+}
+
+// What the TIMELINE panel reads is one list of two different things, and a
+// sequence has to arrive complete enough to play: the clips, in order, each
+// with a path on this server. If the url ever goes missing the panel has a row
+// it cannot open, which is the state this whole feature replaced.
+func TestTimelineListsSequencesWithClipsThePageCanPlay(t *testing.T) {
+	helmstudio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"next_cursor":null,"items":[
+			{"id":"01TL","name":"h3 sequence","revision":1,"duration_s":10.3,"etag":"\"1\"",
+			 "studio_id":"h3-studio","created_at":"2026-09-19T18:00:00Z","updated_at":"2026-09-19T18:10:00Z",
+			 "target":{"width":800,"height":448,"fps":24,"sample_rate":48000},
+			 "tracks":[{"kind":"video","name":"V1","clips":[{"asset_id":"A1"},{"asset_id":"A2","in":0.5}]}]}]}`)
+	}))
+	defer helmstudio.Close()
+
+	app, cfg := newTestApp(t, false)
+	cfg.Platform = &Platform{client: helm.NewRemote(helmstudio.URL, "a-token")}
+
+	rec := do(app, "GET", "/api/timeline", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/timeline is %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+		Meta struct {
+			Source string `json:"source"`
+			Clips  []struct {
+				URL string   `json:"url"`
+				In  *float64 `json:"in"`
+			} `json:"clips"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatalf("decoding the panel's list: %v", err)
+	}
+	// The session is empty, so the one row is the sequence.
+	if len(items) != 1 || items[0].Meta.Source != "helmstudio" {
+		t.Fatalf("the panel was sent %+v", items)
+	}
+	seq := items[0]
+	if seq.URL != "" {
+		t.Errorf("the sequence carries a url of its own: %q", seq.URL)
+	}
+	if len(seq.Meta.Clips) != 2 {
+		t.Fatalf("clips = %+v, want the two V1 holds", seq.Meta.Clips)
+	}
+	if seq.Meta.Clips[0].URL != "/helm/api/v1/assets/A1" || seq.Meta.Clips[1].URL != "/helm/api/v1/assets/A2" {
+		t.Errorf("clip urls are %q and %q", seq.Meta.Clips[0].URL, seq.Meta.Clips[1].URL)
+	}
+	if seq.Meta.Clips[0].In != nil {
+		t.Errorf("an untrimmed clip arrived with in = %v", *seq.Meta.Clips[0].In)
+	}
+	if seq.Meta.Clips[1].In == nil || *seq.Meta.Clips[1].In != 0.5 {
+		t.Errorf("the trimmed clip arrived with in = %v, want 0.5", seq.Meta.Clips[1].In)
 	}
 }

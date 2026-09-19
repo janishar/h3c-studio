@@ -4,6 +4,10 @@
 
 const TL = { seq: [], browse: null, dragFrom: null };
 
+// The sequence the viewer is playing: its clips, which one is on screen, and
+// the listeners driving it. Empty when the viewer is showing anything else.
+const SEQ = { item: null, clips: [], at: 0, on: null };
+
 async function loadTimeline() {
   if (!state.session) return;
   state.timeline = await api(`/api/timeline?session=${encodeURIComponent(state.session)}`);
@@ -13,6 +17,89 @@ async function loadTimeline() {
 /** A sequence helmstudio keeps, rather than a video this session rendered. */
 function isSequence(item) {
   return item.meta?.source === "helmstudio";
+}
+
+/** The clips of a sequence the viewer can play: each needs a source to play. */
+function sequenceClips(item) {
+  return (item.meta?.clips || []).filter((clip) => clip.url);
+}
+
+function sequenceCaption(item, index, total) {
+  return `${item.name}${total > 1 ? ` · clip ${index + 1}/${total}` : ""} · in helmstudio`;
+}
+
+// A sequence is an edit helmstudio keeps, not a file on this disk, so there is
+// nothing to hand the viewer but the clips it names. Clicking one plays them
+// in order in the same player a take uses — each clip straight from its asset
+// through this studio's /helm/ proxy, cut at the in and out points the
+// sequence holds — so the edit can be watched as it stands, without waiting on
+// an export. Sound is each clip's own; a sequence whose audio was cut on its
+// own tracks has to be exported to be heard as it was laid out.
+function playSequence(item) {
+  const clips = sequenceClips(item);
+  if (!clips.length) return;
+  const player = $("player");
+  // This clears whatever the viewer held, including another sequence, so SEQ
+  // is only filled in afterwards.
+  showVideo(clips[0].url, sequenceCaption(item, 0, clips.length));
+  SEQ.item = item;
+  SEQ.clips = clips;
+  SEQ.at = 0;
+  SEQ.on = {
+    loadedmetadata: () => seekIntoClip(player),
+    timeupdate: () => {
+      const clip = SEQ.clips[SEQ.at];
+      // A clip ends at its out point, not at the end of the asset it was cut
+      // from; ended covers the clip that runs to the end.
+      if (clip.out != null && player.currentTime >= clip.out) nextClip();
+    },
+    ended: () => nextClip(),
+  };
+  for (const [event, handler] of Object.entries(SEQ.on)) player.addEventListener(event, handler);
+  // Watching a sequence is a choice, as picking a take is: a render running
+  // behind it keeps its previews out of the viewer.
+  if (state.runningId) state.followPreview = false;
+  state.selected = null;
+  state.selectedTimeline = null;
+  state.selectedSequence = item.meta?.timeline_id || item.name;
+  renderTakes();
+  renderTimelineList();
+}
+
+// Start the clip on screen where the sequence cuts into it. It runs on every
+// loadedmetadata, since a source has no seekable range before then.
+function seekIntoClip(player) {
+  const into = SEQ.clips[SEQ.at]?.in;
+  if (into && player.currentTime < into) player.currentTime = into;
+}
+
+/** Cut to the next clip, or stop on the last one as a take does when it ends. */
+function nextClip() {
+  const player = $("player");
+  if (SEQ.at + 1 >= SEQ.clips.length) {
+    player.pause();
+    return;
+  }
+  SEQ.at += 1;
+  player.src = SEQ.clips[SEQ.at].url;
+  player.load();
+  setCaption(sequenceCaption(SEQ.item, SEQ.at, SEQ.clips.length));
+  player.play().catch(() => {});
+}
+
+// Stop playing a sequence. showVideo calls this before it shows anything
+// else, which is every other way the viewer changes — so a take, a preview or
+// an emptied viewer all end the sequence rather than fighting it for the
+// player.
+function stopSequence() {
+  if (!SEQ.clips.length) return;
+  const player = $("player");
+  for (const [event, handler] of Object.entries(SEQ.on || {})) player.removeEventListener(event, handler);
+  SEQ.item = null;
+  SEQ.clips = [];
+  SEQ.at = 0;
+  SEQ.on = null;
+  state.selectedSequence = null;
 }
 
 function timelineMeta(item) {
@@ -34,14 +121,18 @@ function renderTimelineList() {
   }
   $("timelineList").replaceChildren(...state.timeline.map((item) => {
     // A sequence has no file here: it is an edit helmstudio keeps, and
-    // exporting one is its own job. So it is not selectable into the combine
-    // editor, has no thumbnail to show, and is offered none of the three
-    // actions below, every one of which reads or deletes a file in this
-    // session.
+    // exporting one is its own job. So clicking one plays its clips rather
+    // than a file, it is not selectable into the combine editor, and it is
+    // offered none of the three actions below, every one of which reads or
+    // deletes a file in this session.
     const sequence = isSequence(item);
+    const playable = sequence && sequenceClips(item).length > 0;
+    const on = sequence
+      ? state.selectedSequence && state.selectedSequence === (item.meta?.timeline_id || item.name)
+      : item.name === state.selectedTimeline;
     return el("li", {
-      class: !sequence && item.name === state.selectedTimeline ? "on" : "",
-      onclick: sequence ? null : () => selectTimeline(item.name),
+      class: on ? "on" : "",
+      onclick: sequence ? (playable ? () => playSequence(item) : null) : () => selectTimeline(item.name),
     },
       el("div", { class: "row" },
         el("div", { class: "thumb" }, item.thumb ? el("img", { src: item.thumb, alt: "", loading: "lazy" }) : null),
@@ -58,7 +149,9 @@ function renderTimelineList() {
 }
 
 function selectTimeline(name) {
-  const item = state.timeline.find((t) => t.name === name);
+  // By name and by kind: a sequence may carry the same name as a combined
+  // video, and it is the file this plays.
+  const item = state.timeline.find((t) => !isSequence(t) && t.name === name);
   if (!item) return;
   state.selectedTimeline = name;
   state.selected = null;
@@ -72,7 +165,10 @@ function openTimelineModal() {
   renderSequence();
   $("timelineOutputName").value = "";
   $("timelineRenderStatus").textContent = "";
-  if (state.timeline[0]) showReview(state.timeline[0]);
+  // The review pane plays a file, so it opens on the newest combined video —
+  // a sequence has no file of its own to give it.
+  const combined = state.timeline.find((item) => !isSequence(item));
+  if (combined) showReview(combined);
   else clearReview();
   $("timelineModal").hidden = false;
   browseTo("");
